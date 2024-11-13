@@ -1,5 +1,6 @@
 <img align="left" width="90" height="90" src=".github/spot_logo.png">
 
+## MULTISCALE SLOT ATTENTION FOR SPOT
 ## SPOT: Self-Training with Patch-Order Permutation for Object-Centric Learning with Autoregressive Transformers
 
 ---
