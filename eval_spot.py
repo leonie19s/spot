@@ -1,4 +1,5 @@
 import copy
+import os
 import os.path
 import argparse
 import pandas as pd
@@ -9,10 +10,15 @@ from torch.utils.data import DataLoader
 import torchvision.utils as vutils
 from torchvision.utils import save_image
 from spot import SPOT
+from msa_spot import MSA_SPOT
 from datasets import PascalVOC, COCO2017, MOVi
 from ocl_metrics import UnsupervisedMaskIoUMetric, ARIMetric
-from utils_spot import inv_normalize, visualize, bool_flag
+from utils_spot import inv_normalize, visualize, bool_flag, reduce_dataset
 import models_vit
+
+
+# Set available devices here, do NOT use GPU 0 on node 20
+os.environ["CUDA_VISIBLE_DEVICES"] = "1,2,3"
 
 parser = argparse.ArgumentParser()
 
@@ -23,6 +29,9 @@ parser.add_argument('--val_image_size', type=int, default=224)
 parser.add_argument('--val_mask_size', type=int, default=320)
 parser.add_argument('--eval_batch_size', type=int, default=32)
 parser.add_argument('--viz_resolution_factor', type=float, default=0.5)
+
+parser.add_argument('--slot_attention_scales', type=int, default=1, help="At how many scales should slot attention be computed, default of 1 is equal to SPOT, >1 is Multi-Scale SPOT and denotes how many of the last encoder layers should slot attention be applied upon.")
+parser.add_argument('--debug', type=bool, default=False)
 
 parser.add_argument('--checkpoint_path', default='checkpoint.pt.tar')
 parser.add_argument('--log_path', default='results')
@@ -75,6 +84,11 @@ elif args.dataset == 'coco':
 elif args.dataset == 'movi':
     val_dataset = MOVi(root=os.path.join(args.data_path, 'validation'), split='validation', image_size=args.val_image_size, mask_size = args.val_mask_size)
 
+# Apply debug settings
+if args.debug:
+    print("Debug enabled - reducing dataset size to 10 %")
+    val_dataset = reduce_dataset(val_dataset, 0.1)
+
 args.max_tokens = int((args.val_image_size/16)**2)
 
 val_sampler = None
@@ -126,7 +140,10 @@ else:
 if args.num_cross_heads is None:
     args.num_cross_heads = args.num_heads
 
-model = SPOT(encoder, args, encoder_second)
+if args.slot_attention_scales > 1:
+    model = MSA_SPOT(encoder, args, encoder_second)
+else:
+    model = SPOT(encoder, args, encoder_second)
 
 checkpoint = torch.load(args.checkpoint_path, map_location='cpu')
 checkpoint['model'] = {k.replace("tf_dec.", "dec."): v for k, v in checkpoint['model'].items()} # compatibility with older runs
