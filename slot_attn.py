@@ -155,3 +155,38 @@ class SlotAttentionEncoder(nn.Module):
             slots_init = self.slots_init.weight.expand(B, -1, -1).contiguous()
         
         return slots_init
+
+class MultiScaleSlotAttentionEncoder(nn.Module):
+    
+    def __init__(self, num_iterations, num_slots, input_channels, slot_size, mlp_hidden_size, pos_channels,
+                  truncate='bi-level', init_method='embedding', num_heads = 1, drop_path = 0.0, scales=3):
+        super().__init__()
+        
+        self.scales = scales
+        self.slot_attention_encoders = nn.ModuleList([
+            SlotAttentionEncoder(
+                num_iterations, num_slots, input_channels, slot_size, mlp_hidden_size,
+                pos_channels, truncate, init_method, num_heads, drop_path
+            ) for i in range(scales)
+        ])
+    
+    def forward(self, x):
+        slots_list = []
+        attn_list = []
+        init_slots_list = []
+        attn_logits_list = []
+
+        for sae, inp in zip(self.slot_attention_encoders, x):
+            slots, attn, init_slots, attn_logits = sae(inp)
+            slots_list.append(slots)
+            attn_list.append(attn)
+            init_slots_list.append(init_slots)
+            attn_logits_list.append(attn_logits)
+    
+        # TODO: Other aggregation fcts
+        agg_slots = torch.stack(slots_list).sum(0)
+        agg_attn = torch.stack(attn_list).sum(0)
+        agg_init_slots = torch.stack(init_slots_list).sum(0)
+        agg_attn_logits = torch.stack(attn_logits_list).sum(0)
+
+        return agg_slots, agg_attn, agg_init_slots, agg_attn_logits
