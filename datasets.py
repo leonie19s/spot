@@ -22,7 +22,7 @@ class PascalVOC(Dataset):
         assert split in ['trainaug', 'val']
         imglist_fp = os.path.join(root, 'ImageSets/Segmentation', split+'.txt')
         self.imglist = self.read_imglist(imglist_fp)
-
+        
         self.root = root
         self.train_transform = transforms.Compose([
                             transforms.Resize(size=image_size, interpolation=transforms.InterpolationMode.BILINEAR),

@@ -14,11 +14,14 @@ from torch.utils.tensorboard import SummaryWriter
 import torchvision.utils as vutils
 
 from spot import SPOT
+from ms_spot import MSSPOT
 from datasets import PascalVOC, COCO2017, MOVi
 from ocl_metrics import UnsupervisedMaskIoUMetric, ARIMetric
 from utils_spot import inv_normalize, cosine_scheduler, visualize, bool_flag, load_pretrained_encoder
 import models_vit
 
+device_ids =[1]
+os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
 def get_args_parser():
     parser = argparse.ArgumentParser('SPOT', add_help=False)
@@ -74,7 +77,9 @@ def get_args_parser():
     
     parser.add_argument('--train_permutations',  type=str, default='random', help='which permutation')
     parser.add_argument('--eval_permutations',  type=str, default='standard', help='which permutation')
-    
+
+    parser.add_argument('--n_scales', type=int, default=3, help= "number of scales for the multiscale attention")
+    parser.add_argument('--concat_method', type=str, default='add', help="how the multiscale attention is concatenated")
     return parser
 
 def train(args):
@@ -151,7 +156,8 @@ def train(args):
     if args.num_cross_heads is None:
         args.num_cross_heads = args.num_heads
     
-    model = SPOT(encoder, args, encoder_second)
+    # TODO CHANGED TO MS_SPOT
+    model = MSSPOT(encoder, args, encoder_second)
     
     if os.path.isfile(args.checkpoint_path):
         checkpoint = torch.load(args.checkpoint_path, map_location='cpu')
