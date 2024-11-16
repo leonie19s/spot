@@ -159,7 +159,7 @@ class SlotAttentionEncoder(nn.Module):
 class MultiScaleSlotAttentionEncoder(nn.Module):
     
     def __init__(self, num_iterations, num_slots, input_channels, slot_size, mlp_hidden_size, pos_channels,
-                  truncate='bi-level', init_method='embedding', num_heads = 1, drop_path = 0.0, scales=3):
+                  truncate='bi-level', init_method='embedding', num_heads = 1, drop_path = 0.0, scales=3, agg_fct="mean"):
         super().__init__()
         
         self.scales = scales
@@ -169,6 +169,15 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
                 pos_channels, truncate, init_method, num_heads, drop_path
             ) for i in range(scales)
         ])
+
+        # Set aggregation function according to provided args, default to mean
+        self.agg_fct = torch.mean
+        if agg_fct == "sum":
+            self.agg_fct = torch.sum
+        elif agg_fct == "max":
+            self.agg_fct = torch.max
+        elif agg_fct != "mean":
+            print(f"Provided aggregation function {agg_fct} does not exist, defaulting to mean")
     
     def forward(self, x):
         slots_list = []
@@ -183,10 +192,9 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
             init_slots_list.append(init_slots)
             attn_logits_list.append(attn_logits)
     
-        # TODO: Other aggregation fcts
-        agg_slots = torch.stack(slots_list).sum(0)
-        agg_attn = torch.stack(attn_list).sum(0)
-        agg_init_slots = torch.stack(init_slots_list).sum(0)
-        agg_attn_logits = torch.stack(attn_logits_list).sum(0)
+        agg_slots = self.agg_fct(torch.stack(slots_list), dim=0)
+        agg_attn = self.agg_fct(torch.stack(attn_list), dim =0)
+        agg_init_slots = self.agg_fct(torch.stack(init_slots_list), dim=0)
+        agg_attn_logits = self.agg_fct(torch.stack(attn_logits_list), dim=0)
 
         return agg_slots, agg_attn, agg_init_slots, agg_attn_logits

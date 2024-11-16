@@ -32,6 +32,7 @@ parser.add_argument('--viz_resolution_factor', type=float, default=0.5)
 
 parser.add_argument('--slot_attention_scales', type=int, default=1, help="At how many scales should slot attention be computed, default of 1 is equal to SPOT, >1 is Multi-Scale SPOT and denotes how many of the last encoder layers should slot attention be applied upon.")
 parser.add_argument('--debug', type=bool, default=False)
+parser.add_argument('--slot_agg_fct', type=str, default="mean", help="How are slots of different scales aggregated, choose from [mean, sum, max]")
 
 parser.add_argument('--checkpoint_path', default='checkpoint.pt.tar')
 parser.add_argument('--log_path', default='results')

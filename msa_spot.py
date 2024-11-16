@@ -45,7 +45,8 @@ class MSA_SPOT(nn.Module):
 
         self.slot_attn = MultiScaleSlotAttentionEncoder(
             args.num_iterations, args.num_slots, args.d_model, args.slot_size,
-            args.mlp_hidden_size, args.pos_channels, args.truncate, args.init_method, scales=args.slot_attention_scales
+            args.mlp_hidden_size, args.pos_channels, args.truncate, args.init_method,
+            scales=args.slot_attention_scales, agg_fct=args.slot_agg_fct
         )
 
         self.input_proj = nn.Sequential(

@@ -42,6 +42,7 @@ def get_args_parser():
     parser.add_argument('--eval_viz_percent', type=float, default=0.2)
 
     parser.add_argument('--slot_attention_scales', type=int, default=1, help="At how many scales should slot attention be computed, default of 1 is equal to SPOT, >1 is Multi-Scale SPOT and denotes how many of the last encoder layers should slot attention be applied upon.")
+    parser.add_argument('--slot_agg_fct', type=str, default="mean", help="How are slots of different scales aggregated, choose from [mean, sum, max]")
     parser.add_argument('--debug', type=bool, default=False)
     
     parser.add_argument('--checkpoint_path', default='checkpoint.pt.tar', help='checkpoint to continue the training, loaded only if exists')
@@ -107,10 +108,10 @@ def train(args):
     
     # Apply debug settings, scale lr_warmup_steps as well since it relies on dataset size
     if args.debug:
-        print("Debug enabled - reducing dataset size to 10 %")
-        train_dataset = reduce_dataset(train_dataset, 0.1)
-        val_dataset = reduce_dataset(val_dataset, 0.1)
-        args.lr_warmup_steps = args.lr_warmup_steps * 0.1
+        print("Debug enabled - reducing dataset size to 50 %")
+        train_dataset = reduce_dataset(train_dataset, 0.5)
+        val_dataset = reduce_dataset(val_dataset, 0.5)
+        args.lr_warmup_steps = args.lr_warmup_steps * 0.5
 
     train_sampler = None
     val_sampler = None
