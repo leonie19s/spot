@@ -160,7 +160,7 @@ class SlotAttentionEncoder(nn.Module):
 class MultiScaleSlotAttentionEncoder(nn.Module):
     
     def __init__(self, num_iterations, num_slots,
-                 input_channels, slot_size, mlp_hidden_size, pos_channels, truncate='bi-level', init_method='embedding', n_scales = 3, concat_method = "add", num_heads = 1, drop_path = 0.0):
+                 input_channels, slot_size, mlp_hidden_size, pos_channels, truncate='bi-level', init_method='embedding', n_scales = 3, concat_method = "add", shared_weights=True, num_heads = 1, drop_path = 0.0):
         super().__init__()
         
         self.num_iterations = num_iterations
@@ -192,10 +192,13 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
         else:
             raise NotImplementedError
         
-        self.slot_attention = SlotAttention(
-            num_iterations,
-            input_channels, slot_size, mlp_hidden_size, truncate, num_heads, drop_path=drop_path)
-    
+        if shared_weights:
+            self.slot_attention = SlotAttention(
+                num_iterations,
+                input_channels, slot_size, mlp_hidden_size, truncate, num_heads, drop_path=drop_path)
+        else:
+            raise NotImplementedError
+        
     def forward(self, x):
         # x is a ModuleList?
         # `image` has shape: [n_scales ,batch_size, img_channels, img_height, img_width].
