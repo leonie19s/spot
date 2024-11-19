@@ -17,6 +17,7 @@ from scipy.ndimage import generate_binary_structure
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.data import Subset
 from torchvision import transforms
 from torchvision.utils import draw_segmentation_masks
 
@@ -498,3 +499,17 @@ def load_pretrained_encoder(model, pretrained_weights, prefix=None):
         print(msg)
 
         assert len(set(msg.missing_keys)) == 0
+
+
+def reduce_dataset(dataset, percentage):
+
+    # Generate a list of indices that are to be kept and randomly shuffle
+    reduced_size = int(len(dataset) * percentage)
+    indices = list(range(len(dataset)))
+    random.shuffle(indices)
+    
+    # Select the first reduced_size indices
+    subset_indices = indices[:reduced_size]
+
+    # Create torch.utils.data.subset and return
+    return Subset(dataset, subset_indices)
