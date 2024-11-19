@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 import torchvision.utils as vutils
 from torchvision.utils import save_image
 from spot import SPOT
-from msa_spot import MSA_SPOT
+from ms_spot import MSSPOT
 from datasets import PascalVOC, COCO2017, MOVi
 from ocl_metrics import UnsupervisedMaskIoUMetric, ARIMetric
 from utils_spot import inv_normalize, visualize, bool_flag, reduce_dataset
@@ -18,7 +18,8 @@ import models_vit
 
 
 # Set available devices here, do NOT use GPU 0 on node 20
-os.environ["CUDA_VISIBLE_DEVICES"] = "1,2,3"
+device_ids =[2]
+os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
 parser = argparse.ArgumentParser()
 
@@ -29,10 +30,6 @@ parser.add_argument('--val_image_size', type=int, default=224)
 parser.add_argument('--val_mask_size', type=int, default=320)
 parser.add_argument('--eval_batch_size', type=int, default=32)
 parser.add_argument('--viz_resolution_factor', type=float, default=0.5)
-
-parser.add_argument('--slot_attention_scales', type=int, default=1, help="At how many scales should slot attention be computed, default of 1 is equal to SPOT, >1 is Multi-Scale SPOT and denotes how many of the last encoder layers should slot attention be applied upon.")
-parser.add_argument('--debug', type=bool, default=False)
-parser.add_argument('--slot_agg_fct', type=str, default="mean", help="How are slots of different scales aggregated, choose from [mean, sum, max]")
 
 parser.add_argument('--checkpoint_path', default='checkpoint.pt.tar')
 parser.add_argument('--log_path', default='results')
@@ -69,6 +66,12 @@ parser.add_argument('--use_second_encoder',  type= bool_flag, default = True, he
 parser.add_argument('--train_permutations',  type=str, default='random', help='it is just for the initialization')
 parser.add_argument('--eval_permutations',  type=str, default='standard', help='standard, random, or all')
 
+parser.add_argument('--n_scales', type=int, default=3, help= "number of scales for the multiscale attention")
+parser.add_argument('--concat_method', type=str, default='add', help="how the multiscale attention is concatenated, choose from ['mean', 'sum']")
+parser.add_argument('--shared_weights', type=bool, default=True, help='if the weights of the slot attention encoder module are shared')
+parser.add_argument('--data_cut', type=float, default=1, help='factor how much of the original length of the data is used')
+    
+
 args = parser.parse_args()
 
 torch.manual_seed(args.seed)
@@ -85,10 +88,10 @@ elif args.dataset == 'coco':
 elif args.dataset == 'movi':
     val_dataset = MOVi(root=os.path.join(args.data_path, 'validation'), split='validation', image_size=args.val_image_size, mask_size = args.val_mask_size)
 
-# Apply debug settings
-if args.debug:
-    print("Debug enabled - reducing dataset size to 10 %")
-    val_dataset = reduce_dataset(val_dataset, 0.1)
+# Apply data reduction settings
+if args.data_cut < 1:
+    print(f"Dataset size is reduced using factor {args.data_cut}")
+    val_dataset = reduce_dataset(val_dataset, args.data_cut)
 
 args.max_tokens = int((args.val_image_size/16)**2)
 
@@ -141,8 +144,8 @@ else:
 if args.num_cross_heads is None:
     args.num_cross_heads = args.num_heads
 
-if args.slot_attention_scales > 1:
-    model = MSA_SPOT(encoder, args, encoder_second)
+if args.n_scales > 1:
+    model = MSSPOT(encoder, args, encoder_second)
 else:
     model = SPOT(encoder, args, encoder_second)
 

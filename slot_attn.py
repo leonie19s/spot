@@ -158,27 +158,30 @@ class SlotAttentionEncoder(nn.Module):
 
       
 class MultiScaleSlotAttentionEncoder(nn.Module):
-    
+    """
+        Mutli-Scale Slot Attention Encoder where no weights are shared, i.e. every scale has its own encoder
+    """
+
     def __init__(self, num_iterations, num_slots, input_channels, slot_size, mlp_hidden_size, pos_channels,
-                  truncate='bi-level', init_method='embedding', num_heads = 1, drop_path = 0.0, scales=3, agg_fct="mean"):
+                  truncate='bi-level', init_method='embedding', n_scales = 3, concat_method = "add", num_heads = 1, drop_path = 0.0):
         super().__init__()
         
-        self.scales = scales
+        self.scales = n_scales
         self.slot_attention_encoders = nn.ModuleList([
             SlotAttentionEncoder(
                 num_iterations, num_slots, input_channels, slot_size, mlp_hidden_size,
                 pos_channels, truncate, init_method, num_heads, drop_path
-            ) for i in range(scales)
+            ) for i in range(n_scales)
         ])
 
         # Set aggregation function according to provided args, default to mean
-        self.agg_fct = torch.mean
-        if agg_fct == "sum":
-            self.agg_fct = torch.sum
-        elif agg_fct == "max":
+        self.agg_fct = torch.sum
+        if concat_method == "mean":
+            self.agg_fct = torch.mean
+        elif concat_method == "max":
             self.agg_fct = torch.max
-        elif agg_fct != "mean":
-            print(f"Provided aggregation function {agg_fct} does not exist, defaulting to mean")
+        elif concat_method != "sum":
+            print(f"Provided aggregation function {concat_method} does not exist, defaulting to sum")
     
     def forward(self, x):
         slots_list = []
@@ -202,9 +205,12 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
 
       
 class MultiScaleSlotAttentionEncoderShared(nn.Module):
-    
+    """
+        Mutli-Scale Slot Attention Encoder where all weights are shared, i.e. every scale shares the same encoder
+    """
+
     def __init__(self, num_iterations, num_slots,
-                 input_channels, slot_size, mlp_hidden_size, pos_channels, truncate='bi-level', init_method='embedding', n_scales = 3, concat_method = "add", shared_weights=True, num_heads = 1, drop_path = 0.0):
+                 input_channels, slot_size, mlp_hidden_size, pos_channels, truncate='bi-level', init_method='embedding', n_scales = 3, concat_method = "add", num_heads = 1, drop_path = 0.0):
         super().__init__()
         
         self.num_iterations = num_iterations
@@ -236,12 +242,9 @@ class MultiScaleSlotAttentionEncoderShared(nn.Module):
         else:
             raise NotImplementedError
         
-        if shared_weights:
-            self.slot_attention = SlotAttention(
-                num_iterations,
-                input_channels, slot_size, mlp_hidden_size, truncate, num_heads, drop_path=drop_path)
-        else:
-            raise NotImplementedError
+        self.slot_attention = SlotAttention(
+            num_iterations,
+            input_channels, slot_size, mlp_hidden_size, truncate, num_heads, drop_path=drop_path)
         
     def forward(self, x):
         # x is a ModuleList?

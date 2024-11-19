@@ -15,18 +15,15 @@ from torch.utils.tensorboard import SummaryWriter
 import torchvision.utils as vutils
 
 from spot import SPOT
-from msa_spot import MSA_SPOT
 from ms_spot import MSSPOT
 from datasets import PascalVOC, COCO2017, MOVi
 from ocl_metrics import UnsupervisedMaskIoUMetric, ARIMetric
 from utils_spot import inv_normalize, cosine_scheduler, visualize, bool_flag, load_pretrained_encoder, reduce_dataset
 import models_vit
 
-device_ids =[1]
-os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
-
 # Set available devices here, do NOT use GPU 0 on node 20
-os.environ["CUDA_VISIBLE_DEVICES"] = "1,2,3"
+device_ids =[2]
+os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
 
 def get_args_parser():
@@ -43,10 +40,6 @@ def get_args_parser():
     parser.add_argument('--val_mask_size', type=int, default=320)
     parser.add_argument('--eval_batch_size', type=int, default=32)
     parser.add_argument('--eval_viz_percent', type=float, default=0.2)
-
-    parser.add_argument('--slot_attention_scales', type=int, default=1, help="At how many scales should slot attention be computed, default of 1 is equal to SPOT, >1 is Multi-Scale SPOT and denotes how many of the last encoder layers should slot attention be applied upon.")
-    parser.add_argument('--slot_agg_fct', type=str, default="mean", help="How are slots of different scales aggregated, choose from [mean, sum, max]")
-    parser.add_argument('--debug', type=bool, default=False)
     
     parser.add_argument('--checkpoint_path', default='checkpoint.pt.tar', help='checkpoint to continue the training, loaded only if exists')
     parser.add_argument('--log_path', default='logs')
@@ -89,7 +82,7 @@ def get_args_parser():
     parser.add_argument('--eval_permutations',  type=str, default='standard', help='which permutation')
 
     parser.add_argument('--n_scales', type=int, default=3, help= "number of scales for the multiscale attention")
-    parser.add_argument('--concat_method', type=str, default='add', help="how the multiscale attention is concatenated")
+    parser.add_argument('--concat_method', type=str, default='add', help="how the multiscale attention is concatenated, choose from ['mean', 'sum']")
     parser.add_argument('--shared_weights', type=bool, default=True, help='if the weights of the slot attention encoder module are shared')
     parser.add_argument('--data_cut', type=float, default=1, help='factor how much of the original length of the data is used')
     
@@ -105,21 +98,21 @@ def train(args):
     writer.add_text('hparams', arg_str)
     
     if args.dataset == 'voc':
-        train_dataset = PascalVOC(root=args.data_path, split='trainaug', image_size=args.image_size, mask_size = args.image_size, data_cut= args.data_cut)
-        val_dataset = PascalVOC(root=args.data_path, split='val', image_size=args.val_image_size, mask_size = args.val_mask_size, data_cut= args.data_cut)
+        train_dataset = PascalVOC(root=args.data_path, split='trainaug', image_size=args.image_size, mask_size = args.image_size)
+        val_dataset = PascalVOC(root=args.data_path, split='val', image_size=args.val_image_size, mask_size = args.val_mask_size)
     elif args.dataset == 'coco':
-        train_dataset = COCO2017(root=args.data_path, split='train', image_size=args.image_size, mask_size = args.image_size, data_cut= args.data_cut)
-        val_dataset = COCO2017(root=args.data_path, split='val', image_size=args.val_image_size, mask_size = args.val_mask_size, data_cut= args.data_cut)
+        train_dataset = COCO2017(root=args.data_path, split='train', image_size=args.image_size, mask_size = args.image_size)
+        val_dataset = COCO2017(root=args.data_path, split='val', image_size=args.val_image_size, mask_size = args.val_mask_size)
     elif args.dataset == 'movi':
-        train_dataset = MOVi(root=os.path.join(args.data_path, 'train'), split='train', image_size=args.image_size, mask_size = args.image_size, frames_per_clip=9, predefined_json_paths = args.predefined_movi_json_paths, data_cut= args.data_cut)
-        val_dataset = MOVi(root=os.path.join(args.data_path, 'validation'), split='validation', image_size=args.val_image_size, mask_size = args.val_mask_size, data_cut= args.data_cut)
+        train_dataset = MOVi(root=os.path.join(args.data_path, 'train'), split='train', image_size=args.image_size, mask_size = args.image_size, frames_per_clip=9, predefined_json_paths = args.predefined_movi_json_paths)
+        val_dataset = MOVi(root=os.path.join(args.data_path, 'validation'), split='validation', image_size=args.val_image_size, mask_size = args.val_mask_size)
     
-    # Apply debug settings, scale lr_warmup_steps as well since it relies on dataset size
-    if args.debug:
-        print("Debug enabled - reducing dataset size to 50 %")
-        train_dataset = reduce_dataset(train_dataset, 0.5)
-        val_dataset = reduce_dataset(val_dataset, 0.5)
-        args.lr_warmup_steps = args.lr_warmup_steps * 0.5
+    # Apply data reduction settings, scale lr_warmup_steps as well since it relies on dataset size
+    if args.data_cut < 1:
+        print(f"Dataset size is reduced using factor {args.data_cut}")
+        train_dataset = reduce_dataset(train_dataset, args.data_cut)
+        val_dataset = reduce_dataset(val_dataset, args.data_cut)
+        # args.lr_warmup_steps = args.lr_warmup_steps * args.data_cut
 
     train_sampler = None
     val_sampler = None
@@ -132,8 +125,7 @@ def train(args):
     train_loader = DataLoader(train_dataset, sampler=train_sampler, shuffle=True, drop_last = True, batch_size=args.batch_size, **loader_kwargs)
     val_loader = DataLoader(val_dataset, sampler=val_sampler, shuffle=False, drop_last = False, batch_size=args.eval_batch_size, **loader_kwargs)
     
-    train_epoch_size = len(train_loader) #16
-   
+    train_epoch_size = len(train_loader)
     val_epoch_size = len(val_loader)
     
     log_interval = train_epoch_size // 5
@@ -177,9 +169,8 @@ def train(args):
     if args.num_cross_heads is None:
         args.num_cross_heads = args.num_heads
     
-    if args.slot_attention_scales > 1:
+    if args.n_scales > 1:
         model = MSSPOT(encoder, args, encoder_second)
-        model = MSA_SPOT(encoder, args, encoder_second)
     else:
         model = SPOT(encoder, args, encoder_second)
     
@@ -219,6 +210,7 @@ def train(args):
     # TODO see if needed
     n_warmup_epochs = int(args.lr_warmup_steps/(len(train_dataset)/args.batch_size))
     if n_warmup_epochs > args.epochs/10:
+        print("Warmup epochs needed to be adjusted")
         n_warmup_epochs = int(args.epochs*0.1)
 
     lr_schedule = cosine_scheduler( base_value = args.lr_main,

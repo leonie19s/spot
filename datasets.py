@@ -18,19 +18,12 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 class PascalVOC(Dataset):
-    def __init__(self, root, split, image_size=224, mask_size = 224, data_cut= 1):
+    def __init__(self, root, split, image_size=224, mask_size = 224):
         assert split in ['trainaug', 'val']
         imglist_fp = os.path.join(root, 'ImageSets/Segmentation', split+'.txt')
         
-        imglist = self.read_imglist(imglist_fp)
-        if split != 'trainaug':
-            self.imglist = imglist
-        
-        else:
-            cut_point = int(len(imglist) *data_cut)
-            self.imglist = imglist[:cut_point]
-        
-        print(f"using {len(self.imglist)} images for training (= {data_cut * 100} %)")
+        self.imglist = self.read_imglist(imglist_fp)
+
         self.root = root
         self.train_transform = transforms.Compose([
                             transforms.Resize(size=image_size, interpolation=transforms.InterpolationMode.BILINEAR),
@@ -120,7 +113,6 @@ class COCO2017(Dataset):
         if not os.path.isdir(self.img_dir):
             self.img_dir = os.path.join(root, "images", '{}{}'.format(split, year))
             assert os.path.isdir(self.img_dir)
-        print(type(self.img_dir), len(self.img_dir))
         self.split = split
         self.coco = COCO(ann_file)
         self.coco_mask = mask

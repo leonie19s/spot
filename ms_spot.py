@@ -1,5 +1,5 @@
 from utils_spot import *
-from slot_attn import SlotAttentionEncoder, MultiScaleSlotAttentionEncoder
+from slot_attn import SlotAttentionEncoder, MultiScaleSlotAttentionEncoder, MultiScaleSlotAttentionEncoderShared
 from transformer import TransformerDecoder
 from mlp import MlpDecoder
 import torch
@@ -35,18 +35,18 @@ class MSSPOT(nn.Module):
         with torch.no_grad():
             x = torch.rand(1, args.img_channels, args.image_size, args.image_size)
             x = self.forward_encoder(x, self.encoder)
-            _, num_tokens, d_model = x[0].shape
+            _, num_tokens, d_model = x[-1].shape
 
         args.d_model = d_model
 
         self.num_slots = args.num_slots
         self.d_model = args.d_model # input_channels
         
-       
-        self.slot_attn = MultiScaleSlotAttentionEncoder(
+        sae_class = MultiScaleSlotAttentionEncoderShared if args.shared_weights else MultiScaleSlotAttentionEncoder
+        self.slot_attn = sae_class(
             args.num_iterations, args.num_slots,
             args.d_model, args.slot_size, args.mlp_hidden_size, args.pos_channels,
-            args.truncate, args.init_method, args.n_scales, args.concat_method, args.shared_weights)
+            args.truncate, args.init_method, args.n_scales, args.concat_method)
 
     
         self.input_proj = nn.Sequential(
@@ -150,23 +150,19 @@ class MSSPOT(nn.Module):
         ms_x =[]
         # encoder.blocks are ModuleList
         for i, blk in enumerate(encoder.blocks):
-            if i >= len(encoder.blocks) - self.n_scales and i <= len(encoder.blocks):
+            if i >= len(encoder.blocks) - self.n_scales:
                 x = blk(x)
+                if i == len(encoder.blocks) - 1 and self.encoder_final_norm:
+                    x = encoder.norm(x)
                 ms_x_temp.append(x)
-            
-
-        if self.encoder_final_norm: # The DINOSAUR paper does not use the final norm layer according to the supplementary material.
-            x = encoder.norm(x)
-            ms_x_temp[-1] = x
-           
         
+        offset = 1
+        if self.which_encoder in ['dinov2_vitb14_reg', 'dinov2_vits14_reg']:
+            offset += encoder.num_register_tokens
+        elif self.which_encoder in ['simpool_vits16']:
+            offset += -1
+
         for x in ms_x_temp:
-            # TODO: check offset?
-            offset = 1
-            if self.which_encoder in ['dinov2_vitb14_reg', 'dinov2_vits14_reg']:
-                offset += encoder.num_register_tokens
-            elif self.which_encoder in ['simpool_vits16']:
-                offset += -1
             x = x[:, offset :] # remove the [CLS] and (if they exist) registers tokens 
             ms_x.append(x)
         
@@ -272,7 +268,7 @@ class MSSPOT(nn.Module):
 
         # Apply the slot attention
         slots, slots_attns, _ = self.slot_attn(emb_target)
-        return emb_target, slots, slots_attns
+        return emb_target[-1], slots, slots_attns
 
     def forward(self, image):
         """
