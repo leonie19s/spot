@@ -131,7 +131,7 @@ class SlotAttentionEncoder(nn.Module):
     def forward(self, x):
         # `image` has shape: [batch_size, img_channels, img_height, img_width].
         # `encoder_grid` has shape: [batch_size, pos_channels, enc_height, enc_width].
-        B, *_ = x.size()
+        B, *_ = x.size() # batch size?
         dtype = x.dtype
         device = x.device
         x = self.mlp(self.layer_norm(x))
@@ -156,6 +156,7 @@ class SlotAttentionEncoder(nn.Module):
         
         return slots_init
 
+      
 class MultiScaleSlotAttentionEncoder(nn.Module):
     
     def __init__(self, num_iterations, num_slots, input_channels, slot_size, mlp_hidden_size, pos_channels,
@@ -198,3 +199,107 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
         agg_attn_logits = self.agg_fct(torch.stack(attn_logits_list), dim=0)
 
         return agg_slots, agg_attn, agg_init_slots, agg_attn_logits
+
+      
+class MultiScaleSlotAttentionEncoderShared(nn.Module):
+    
+    def __init__(self, num_iterations, num_slots,
+                 input_channels, slot_size, mlp_hidden_size, pos_channels, truncate='bi-level', init_method='embedding', n_scales = 3, concat_method = "add", shared_weights=True, num_heads = 1, drop_path = 0.0):
+        super().__init__()
+        
+        self.num_iterations = num_iterations
+        self.num_slots = num_slots
+        self.input_channels = input_channels
+        self.slot_size = slot_size
+        self.mlp_hidden_size = mlp_hidden_size
+        self.pos_channels = pos_channels
+        self.init_method = init_method
+
+        self.layer_norm = nn.LayerNorm(input_channels)
+        self.mlp = nn.Sequential(
+            linear(input_channels, input_channels, weight_init='kaiming'),
+            nn.ReLU(),
+            linear(input_channels, input_channels))
+        
+        self.n_scales = n_scales
+        self.concat_method = concat_method
+        assert init_method in ['shared_gaussian', 'embedding']
+        if init_method == 'shared_gaussian':
+            # Parameters for Gaussian init (shared by all slots).
+            self.slot_mu = nn.Parameter(torch.zeros(1, 1, slot_size))
+            self.slot_log_sigma = nn.Parameter(torch.zeros(1, 1, slot_size))
+            nn.init.xavier_uniform_(self.slot_mu)
+            nn.init.xavier_uniform_(self.slot_log_sigma)
+        elif init_method == 'embedding':
+            self.slots_init = nn.Embedding(num_slots, slot_size)
+            nn.init.xavier_uniform_(self.slots_init.weight)
+        else:
+            raise NotImplementedError
+        
+        if shared_weights:
+            self.slot_attention = SlotAttention(
+                num_iterations,
+                input_channels, slot_size, mlp_hidden_size, truncate, num_heads, drop_path=drop_path)
+        else:
+            raise NotImplementedError
+        
+    def forward(self, x):
+        # x is a ModuleList?
+        # `image` has shape: [n_scales ,batch_size, img_channels, img_height, img_width].
+        # `encoder_grid` has shape: [batch_size, pos_channels, enc_height, enc_width].
+        
+        B, *_ = x[0].size() # batch size?
+        dtype = x[0].dtype
+        device = x[0].device
+        
+        ms_slots = []
+        ms_attn = []
+        ms_attn_logits = []
+        ms_init_slots = []
+
+        for i in range(self.n_scales):
+            init_slots = self.slots_initialization(B, dtype, device)
+            ms_init_slots.append(init_slots)
+            # `slots` has shape: [batch_size, num_slots, slot_size].
+            # `attn` has shape: [batch_size, enc_height * enc_width, num_slots].
+            x_item = self.mlp(self.layer_norm(x[i]))
+           
+            # `x` has shape: [batch_size, enc_height * enc_width, cnn_hidden_size].
+            slots, attn, attn_logits = self.slot_attention(x_item, init_slots)
+            ms_slots.append(slots)
+            ms_attn.append(attn)
+            ms_attn_logits.append(attn_logits)
+        
+        return self.concat_slot_attention(self.concat_method, ms_slots, ms_attn, ms_init_slots, ms_attn_logits)
+        
+    
+    def concat_slot_attention(self, concat_method, ms_slots, ms_attn, ms_init_slots, ms_attn_logits):
+        if concat_method == "add":
+            ms_slots = torch.stack(ms_slots).sum(0)
+            # todo: does this make sense?
+            ms_attn = torch.stack(ms_attn).sum(0)
+            ms_attn_logits = torch.stack(ms_attn_logits).sum(0)
+            ms_init_slots = torch.stack(ms_init_slots).sum(0)
+
+        elif concat_method == "mean":
+            ms_slots = torch.stack(ms_slots).mean(0)
+            ms_attn = torch.stack(ms_attn).mean(0)
+            ms_attn_logits = torch.stack(ms_attn_logits).mean(0)
+            ms_init_slots = torch.stack(ms_init_slots).mean(0)
+        elif concat_method== "residual":
+           # TODO: implement!!
+            raise NotImplementedError
+        else:
+            raise NotImplementedError
+        
+        return ms_slots, ms_attn, ms_init_slots, ms_attn_logits
+
+    def slots_initialization(self, B, dtype, device):
+        # The first frame, initialize slots.
+        if self.init_method == 'shared_gaussian':
+            slots_init = torch.empty((B, self.num_slots, self.slot_size), dtype=dtype, device=device).normal_()
+            slots_init = self.slot_mu + torch.exp(self.slot_log_sigma) * slots_init
+        elif self.init_method == 'embedding':
+            slots_init = self.slots_init.weight.expand(B, -1, -1).contiguous()
+        
+        return slots_init

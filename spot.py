@@ -144,8 +144,11 @@ class SPOT(nn.Module):
         else:
             x = encoder.prepare_tokens(x)
 
+        
         for blk in encoder.blocks:
+           
             x = blk(x)
+
         if self.encoder_final_norm: # The DINOSAUR paper does not use the final norm layer according to the supplementary material.
             x = encoder.norm(x)
         
@@ -158,6 +161,7 @@ class SPOT(nn.Module):
 
         return x
 
+    
     def forward_decoder(self, slots, emb_target):
         # Prepate the input tokens for the decoder transformer:
         # (1) insert a learnable beggining-of-sequence ([BOS]) token at the beggining of each target embedding sequence.
@@ -247,6 +251,7 @@ class SPOT(nn.Module):
     def get_embeddings_n_slots(self, image):
         """
         image: batch_size x img_channels x H x W
+        TODO: where is this called?
         """
 
         B, _, H, W = image.size()
@@ -261,10 +266,14 @@ class SPOT(nn.Module):
     def forward(self, image):
         """
         image: batch_size x img_channels x H x W
+        
         """
-
+        
         B, _, H, W = image.size()
-        emb_input = self.forward_encoder(image, self.encoder)
+        emb_input = self.forward_encoder(image, self.encoder) # emb_input are n patchwise features from image X
+
+        # the decoder reconstructs a target signal (orignal image X) from the slot vectors
+        # a pretrained feature encoder (DINO) is used to extract the reconstruction target (and also instantiate the image encoder)
         with torch.no_grad():
             if self.second_encoder is not None:
                 emb_target = self.forward_encoder(image, self.second_encoder)
@@ -273,7 +282,7 @@ class SPOT(nn.Module):
         # emb_target shape: B, N, D
 
         # Apply the slot attention
-        slots, slots_attns, init_slots, attn_logits = self.slot_attn(emb_input)
+        slots, slots_attns, init_slots, attn_logits = self.slot_attn(emb_input) # groups features into latent vectors/slots to represent objects
         attn_logits = attn_logits.squeeze()
         # slots shape: [B, num_slots, Ds]
         # slots_attns shape: [B, N, num_slots]
@@ -290,3 +299,4 @@ class SPOT(nn.Module):
         dec_slots_attns = dec_slots_attns.transpose(-1, -2).reshape(B, self.num_slots, H_enc, W_enc)
 
         return loss_mse, slots_attns, dec_slots_attns, slots, dec_recon, attn_logits
+
