@@ -128,17 +128,19 @@ class SlotAttentionEncoder(nn.Module):
             num_iterations,
             input_channels, slot_size, mlp_hidden_size, truncate, num_heads, drop_path=drop_path)
     
-    def forward(self, x):
+    def forward(self, x, previous_slots=None , last_SA = False):
         # `image` has shape: [batch_size, img_channels, img_height, img_width].
         # `encoder_grid` has shape: [batch_size, pos_channels, enc_height, enc_width].
         B, *_ = x.size() # batch size?
         dtype = x.dtype
         device = x.device
-        x = self.mlp(self.layer_norm(x))
+
+        if last_SA:
+            x = self.mlp(self.layer_norm(x))
         # `x` has shape: [batch_size, enc_height * enc_width, cnn_hidden_size].
 
         # Slot Attention module.
-        init_slots = self.slots_initialization(B, dtype, device)
+        init_slots = self.slots_initialization(B, dtype, device, previous_slots)
 
         slots, attn, attn_logits = self.slot_attention(x, init_slots)
         # `slots` has shape: [batch_size, num_slots, slot_size].
@@ -146,9 +148,11 @@ class SlotAttentionEncoder(nn.Module):
         
         return slots, attn, init_slots, attn_logits
     
-    def slots_initialization(self, B, dtype, device):
+    def slots_initialization(self, B, dtype, device, previous_slots=None):
         # The first frame, initialize slots.
-        if self.init_method == 'shared_gaussian':
+        if previous_slots is not None:
+            slots_init = previous_slots
+        elif self.init_method == 'shared_gaussian':
             slots_init = torch.empty((B, self.num_slots, self.slot_size), dtype=dtype, device=device).normal_()
             slots_init = self.slot_mu + torch.exp(self.slot_log_sigma) * slots_init
         elif self.init_method == 'embedding':
@@ -189,14 +193,22 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
         init_slots_list = []
         attn_logits_list = []
 
-        for sae, inp in zip(self.slot_attention_encoders, x):
-            slots, attn, init_slots, attn_logits = sae(inp)
+        for i, (sae, inp) in enumerate(zip(self.slot_attention_encoders, x)):
+            if i == 0:
+                slots, attn, init_slots, attn_logits = sae(inp, None, False)
+            else:
+                last_SA = True if i == len(x) - 1 else False
+                slots, attn, init_slots, attn_logits = sae(inp, slots_list[-1], last_SA)
+            slots = slots.detach()
+            attn = attn.detach()
             slots_list.append(slots)
             attn_list.append(attn)
             init_slots_list.append(init_slots)
             attn_logits_list.append(attn_logits)
     
         agg_slots = self.agg_fct(torch.stack(slots_list), dim=0)
+
+        #[print(tensor.min().item(), tensor.max().item()) for tensor in slots_list]
         agg_attn = self.agg_fct(torch.stack(attn_list), dim =0)
         agg_init_slots = self.agg_fct(torch.stack(init_slots_list), dim=0)
         agg_attn_logits = self.agg_fct(torch.stack(attn_logits_list), dim=0)

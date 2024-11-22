@@ -513,3 +513,26 @@ def reduce_dataset(dataset, percentage):
 
     # Create torch.utils.data.subset and return
     return Subset(dataset, subset_indices)
+
+
+def check_for_nan_inf(module, input, output):
+    """
+    input: input tensor(s) to the module
+    output: output tensor(s) of the module
+    -> we only check the output, because the input is the output of the previous module
+
+    """
+    def inspect_tensor(tensor, context):
+        if isinstance(tensor, torch.Tensor):
+            nan_mask = torch.isnan(tensor)
+            inf_mask = torch.isinf(tensor)
+            if nan_mask.any() or inf_mask.any():
+                print(f"Warning: Detected NaN or Inf in {context} of module {module.__class__.__name__}")
+                print(f"NaN count: {nan_mask.sum().item()}, Inf count: {inf_mask.sum().item()}")
+
+    # Check outputs (handle single tensor, list, or tuple)
+    if isinstance(output, torch.Tensor):
+        inspect_tensor(output, "output")
+    elif isinstance(output, (list, tuple)):
+        for idx, out in enumerate(output):
+            inspect_tensor(out, f"output {idx}")

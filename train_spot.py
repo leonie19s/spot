@@ -18,11 +18,11 @@ from spot import SPOT
 from ms_spot import MSSPOT
 from datasets import PascalVOC, COCO2017, MOVi
 from ocl_metrics import UnsupervisedMaskIoUMetric, ARIMetric
-from utils_spot import inv_normalize, cosine_scheduler, visualize, bool_flag, load_pretrained_encoder, reduce_dataset
+from utils_spot import inv_normalize, cosine_scheduler, visualize, bool_flag, load_pretrained_encoder, reduce_dataset, check_for_nan_inf
 import models_vit
 
 # Set available devices here, do NOT use GPU 0 on node 20
-device_ids =[2]
+device_ids =[3]
 os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
 
@@ -171,9 +171,17 @@ def train(args):
     
     if args.n_scales > 1:
         model = MSSPOT(encoder, args, encoder_second)
+        # register hooks for MSSPOT
+        for name, module in model.named_modules():
+            module.register_forward_hook(check_for_nan_inf)
     else:
         model = SPOT(encoder, args, encoder_second)
     
+
+    
+
+
+
     if os.path.isfile(args.checkpoint_path):
         checkpoint = torch.load(args.checkpoint_path, map_location='cpu')
         start_epoch = checkpoint['epoch']
@@ -239,6 +247,9 @@ def train(args):
     
     visualize_per_epoch = int(args.epochs*args.eval_viz_percent)
     
+    # check for NaNs and Infs in backward pass
+    torch.autograd.set_detect_anomaly(True)
+
     for epoch in range(start_epoch, args.epochs):
     
         model.train()
@@ -254,6 +265,9 @@ def train(args):
             
             optimizer.zero_grad()
             mse, _, _, _, _, _ = model(image)
+            if torch.isnan(mse):
+                print("Nan in loss")
+                continue
 
             mse.backward()
             total_norm = clip_grad_norm_(model.parameters(), args.clip, 'inf')
