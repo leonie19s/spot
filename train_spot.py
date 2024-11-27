@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.tensorboard import SummaryWriter
 import torchvision.utils as vutils
-
+from torchviz import make_dot
 from spot import SPOT
 from ms_spot import MSSPOT
 from datasets import PascalVOC, COCO2017, MOVi
@@ -112,7 +112,7 @@ def train(args):
         print(f"Dataset size is reduced using factor {args.data_cut}")
         train_dataset = reduce_dataset(train_dataset, args.data_cut)
         val_dataset = reduce_dataset(val_dataset, args.data_cut)
-        # args.lr_warmup_steps = args.lr_warmup_steps * args.data_cut
+        args.lr_warmup_steps = args.lr_warmup_steps * args.data_cut
 
     train_sampler = None
     val_sampler = None
@@ -217,9 +217,9 @@ def train(args):
 
     # TODO see if needed
     n_warmup_epochs = int(args.lr_warmup_steps/(len(train_dataset)/args.batch_size))
-    if n_warmup_epochs > args.epochs/10:
-        print("Warmup epochs needed to be adjusted")
-        n_warmup_epochs = int(args.epochs*0.1)
+    #if n_warmup_epochs > args.epochs/10:
+     #   print("Warmup epochs needed to be adjusted")
+      #  n_warmup_epochs = int(args.epochs*0.1)
 
     lr_schedule = cosine_scheduler( base_value = args.lr_main,
                                     final_value = args.lr_min,
@@ -246,7 +246,7 @@ def train(args):
     ari_slot_metric = ARIMetric(foreground = True, ignore_overlaps = True).cuda()
     
     visualize_per_epoch = int(args.epochs*args.eval_viz_percent)
-    
+    make_graph = True
     # check for NaNs and Infs in backward pass
     torch.autograd.set_detect_anomaly(True)
 
@@ -265,6 +265,10 @@ def train(args):
             
             optimizer.zero_grad()
             mse, _, _, _, _, _ = model(image)
+            if make_graph:
+                print("Making graph")
+                make_dot(mse.mean(), params=dict(model.named_parameters())).render("msspot.png", format="png")
+                make_graph = False
             if torch.isnan(mse):
                 print("Nan in loss")
                 continue
