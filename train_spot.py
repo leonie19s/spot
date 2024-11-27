@@ -14,6 +14,7 @@ from torch.nn.utils import clip_grad_norm_
 from torch.utils.tensorboard import SummaryWriter
 import torchvision.utils as vutils
 from torchviz import make_dot
+from typing import List
 from spot import SPOT
 from ms_spot import MSSPOT
 from datasets import PascalVOC, COCO2017, MOVi
@@ -81,7 +82,7 @@ def get_args_parser():
     parser.add_argument('--train_permutations',  type=str, default='random', help='which permutation')
     parser.add_argument('--eval_permutations',  type=str, default='standard', help='which permutation')
 
-    parser.add_argument('--n_scales', type=int, default=3, help= "number of scales for the multiscale attention")
+    parser.add_argument('--ms_which_enoder_layers', type=List[int], default=[6, 8, 11], help= "Which block layers of the encoders are to be used for multi-scale slot attention")
     parser.add_argument('--concat_method', type=str, default='add', help="how the multiscale attention is concatenated, choose from ['mean', 'sum']")
     parser.add_argument('--shared_weights', type=bool, default=False, help='if the weights of the slot attention encoder module are shared')
     parser.add_argument('--data_cut', type=float, default=1, help='factor how much of the original length of the data is used')
@@ -169,7 +170,7 @@ def train(args):
     if args.num_cross_heads is None:
         args.num_cross_heads = args.num_heads
     
-    if args.n_scales > 1:
+    if len(args.ms_which_enoder_layers) > 1:
         model = MSSPOT(encoder, args, encoder_second)
         # register hooks for MSSPOT
         for name, module in model.named_modules():
@@ -217,6 +218,7 @@ def train(args):
 
     # TODO see if needed
     n_warmup_epochs = int(args.lr_warmup_steps/(len(train_dataset)/args.batch_size))
+
     #if n_warmup_epochs > args.epochs/10:
      #   print("Warmup epochs needed to be adjusted")
       #  n_warmup_epochs = int(args.epochs*0.1)

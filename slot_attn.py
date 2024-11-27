@@ -167,15 +167,15 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
     """
 
     def __init__(self, num_iterations, num_slots, input_channels, slot_size, mlp_hidden_size, pos_channels,
-                  truncate='bi-level', init_method='embedding', n_scales = 3, concat_method = "add", num_heads = 1, drop_path = 0.0):
+                  truncate='bi-level', init_method='embedding', ms_which_enoder_layers = [6, 8, 11], concat_method = "add", num_heads = 1, drop_path = 0.0):
         super().__init__()
         
-        self.scales = n_scales
+        self.ms_which_enoder_layers = ms_which_enoder_layers
         self.slot_attention_encoders = nn.ModuleList([
             SlotAttentionEncoder(
                 num_iterations, num_slots, input_channels, slot_size, mlp_hidden_size,
                 pos_channels, truncate, init_method, num_heads, drop_path
-            ) for i in range(n_scales)
+            ) for i in range(len(ms_which_enoder_layers))
         ])
 
         # Set aggregation function according to provided args, default to mean
@@ -222,7 +222,7 @@ class MultiScaleSlotAttentionEncoderShared(nn.Module):
     """
 
     def __init__(self, num_iterations, num_slots,
-                 input_channels, slot_size, mlp_hidden_size, pos_channels, truncate='bi-level', init_method='embedding', n_scales = 3, concat_method = "add", num_heads = 1, drop_path = 0.0):
+                 input_channels, slot_size, mlp_hidden_size, pos_channels, truncate='bi-level', init_method='embedding', ms_which_enoder_layers = [6, 8, 11], concat_method = "add", num_heads = 1, drop_path = 0.0):
         super().__init__()
         
         self.num_iterations = num_iterations
@@ -239,7 +239,7 @@ class MultiScaleSlotAttentionEncoderShared(nn.Module):
             nn.ReLU(),
             linear(input_channels, input_channels))
         
-        self.n_scales = n_scales
+        self.ms_which_enoder_layers = ms_which_enoder_layers
         self.concat_method = concat_method
         assert init_method in ['shared_gaussian', 'embedding']
         if init_method == 'shared_gaussian':
@@ -272,7 +272,7 @@ class MultiScaleSlotAttentionEncoderShared(nn.Module):
         ms_attn_logits = []
         ms_init_slots = []
 
-        for i in range(self.n_scales):
+        for i in range(len(self.ms_which_enoder_layers)):
             init_slots = self.slots_initialization(B, dtype, device)
             ms_init_slots.append(init_slots)
             # `slots` has shape: [batch_size, num_slots, slot_size].

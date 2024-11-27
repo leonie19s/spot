@@ -6,7 +6,6 @@ import torch
 import random
 import math
 
-
 class MSSPOT(nn.Module):
     def __init__(self, encoder, args, second_encoder=None):
         super().__init__()
@@ -15,7 +14,7 @@ class MSSPOT(nn.Module):
         self.encoder = encoder
         self.second_encoder = second_encoder
         self.encoder_final_norm = args.encoder_final_norm
-        self.n_scales = args.n_scales
+        self.ms_which_enoder_layers = args.ms_which_enoder_layers
         for param_name, param in self.encoder.named_parameters():
             if ('blocks' in param_name):
                 block_id = int(param_name.split('.')[1])
@@ -46,7 +45,7 @@ class MSSPOT(nn.Module):
         self.slot_attn = sae_class(
             args.num_iterations, args.num_slots,
             args.d_model, args.slot_size, args.mlp_hidden_size, args.pos_channels,
-            args.truncate, args.init_method, args.n_scales, args.concat_method)
+            args.truncate, args.init_method, args.ms_which_enoder_layers, args.concat_method)
 
     
         self.input_proj = nn.Sequential(
@@ -150,12 +149,16 @@ class MSSPOT(nn.Module):
         ms_x =[]
         # encoder.blocks are ModuleList
         for i, blk in enumerate(encoder.blocks):
-            if i >= len(encoder.blocks) - self.n_scales:
-                x = blk(x)
-                if i == len(encoder.blocks) - 1 and self.encoder_final_norm:
-                    x = encoder.norm(x)
+            x = blk(x)
+            if i == len(encoder.blocks) - 1 and self.encoder_final_norm:
+                x = encoder.norm(x)
+            if i in self.ms_which_enoder_layers:
                 ms_x_temp.append(x)
         
+            # patch_features = x[0, 1:, :]  # Exclude CLS token
+            # spatial_features = patch_features.mean(dim=-1).reshape(14, 14)
+            # plt.imsave(f"{i}.png", spatial_features)
+
         offset = 1
         if self.which_encoder in ['dinov2_vitb14_reg', 'dinov2_vits14_reg']:
             offset += encoder.num_register_tokens
