@@ -82,8 +82,9 @@ def get_args_parser():
     parser.add_argument('--train_permutations',  type=str, default='random', help='which permutation')
     parser.add_argument('--eval_permutations',  type=str, default='standard', help='which permutation')
 
-    parser.add_argument('--ms_which_enoder_layers', type=List[int], default=[6, 8, 11], help= "Which block layers of the encoders are to be used for multi-scale slot attention")
-    parser.add_argument('--concat_method', type=str, default='add', help="how the multiscale attention is concatenated, choose from ['mean', 'sum']")
+    parser.add_argument('--ms_which_enoder_layers', type=List[int], default=[9,10,11], help= "Which block layers of the encoders are to be used for multi-scale slot attention")
+    parser.add_argument('--concat_method', type=str, default='mean', help="how the multiscale attention is concatenated, choose from ['mean', 'sum']")
+    parser.add_argument("--slot_initialization", type=str, default=None, help="initialization method for slots")
     parser.add_argument('--shared_weights', type=bool, default=False, help='if the weights of the slot attention encoder module are shared')
     parser.add_argument('--data_cut', type=float, default=1, help='factor how much of the original length of the data is used')
     
@@ -179,8 +180,6 @@ def train(args):
         model = SPOT(encoder, args, encoder_second)
     
 
-    
-
 
 
     if os.path.isfile(args.checkpoint_path):
@@ -248,10 +247,10 @@ def train(args):
     ari_slot_metric = ARIMetric(foreground = True, ignore_overlaps = True).cuda()
     
     visualize_per_epoch = int(args.epochs*args.eval_viz_percent)
-    make_graph = True
+    make_graph = False
     # check for NaNs and Infs in backward pass
     torch.autograd.set_detect_anomaly(True)
-
+    print(datetime.now())
     for epoch in range(start_epoch, args.epochs):
     
         model.train()
@@ -269,7 +268,7 @@ def train(args):
             mse, _, _, _, _, _ = model(image)
             if make_graph:
                 print("Making graph")
-                make_dot(mse.mean(), params=dict(model.named_parameters())).render("msspot.png", format="png")
+                make_dot(mse.mean(), params=dict(model.named_parameters())).render("msspotnodetach.png", format="png")
                 make_graph = False
             if torch.isnan(mse):
                 print("Nan in loss")
