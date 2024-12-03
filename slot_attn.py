@@ -196,19 +196,22 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
         attn_list = []
         init_slots_list = []
         attn_logits_list = []
-        
+        old_slots = None
         for i, (sae, inp) in enumerate(zip(self.slot_attention_encoders, x)):
             if self.slot_initialization == "hierarchical":
                 if i == 0:
-                    slots, attn, init_slots, attn_logits = sae(inp, None, False)
+                    slots, attn, init_slots, attn_logits = sae(inp, None, True if i == len(x) - 1 else False)
+                    old_slots = slots
                 else:
-                    last_SA = True if i == len(x) - 1 else False
-                    slots, attn, init_slots, attn_logits = sae(inp, slots_list[-1], last_SA)
+                    slots, attn, init_slots, attn_logits = sae(inp, slots_list[-1], True if i == len(x) - 1 else False)
+                    # residual connection
+                    slots = slots + old_slots
             else:
-                slots, attn, init_slots, attn_logits = sae(inp, None, False)
+                # TODO: does this make sense?
+                slots, attn, init_slots, attn_logits = sae(inp, None, True if i == len(x) - 1 else False)
             slots = slots.detach()
             # TODO: do we want to detach this??
-            attn = attn.detach()
+            #attn = attn.detach() -> not done in rubens code
             slots_list.append(slots)
             attn_list.append(attn)
             init_slots_list.append(init_slots)
@@ -221,7 +224,7 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
         agg_init_slots = self.agg_fct(torch.stack(init_slots_list), dim=0)
         agg_attn_logits = self.agg_fct(torch.stack(attn_logits_list), dim=0)
 
-        return agg_slots, agg_attn, agg_init_slots, agg_attn_logits
+        return agg_slots, attn_list[-1], agg_init_slots, agg_attn_logits
 
       
 class MultiScaleSlotAttentionEncoderShared(nn.Module):
