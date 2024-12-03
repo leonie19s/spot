@@ -170,14 +170,21 @@ def train(args):
     if args.num_cross_heads is None:
         args.num_cross_heads = args.num_heads
     
+    # Print settings for better reproducibility / result tracking
+    print("\n=======================\n \nSettings:\n")
+    for entry in arg_str_list:
+        print(entry)
+
     if len(args.ms_which_enoder_layers) > 1:
+        print ("MS-SPOT USED \n")
         model = MSSPOT(encoder, args, encoder_second)
         # register hooks for MSSPOT
         for name, module in model.named_modules():
             module.register_forward_hook(check_for_nan_inf)
     else:
+        print ("NORMAL SPOT USED \n")
         model = SPOT(encoder, args, encoder_second)
-    
+    print ("\n=======================\n")
 
     
 
