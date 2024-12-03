@@ -55,6 +55,8 @@ class SlotAttention(nn.Module):
         B, N_q, D_slot = slots.size()
 
         inputs = self.norm_inputs(inputs)
+        #print all types
+        #print("inputs",type(inputs), "slots init", type(slots_init),"num heads", type(self.num_heads), "B",type(B), "N_kv", type(N_kv),"Nq", type(N_q), "D_inp",type(D_inp),"D_slot", type(D_slot))
         k = self.project_k(inputs).view(B, N_kv, self.num_heads, -1).transpose(1, 2)    # Shape: [batch_size, num_heads, num_inputs, slot_size // num_heads].
         v = self.project_v(inputs).view(B, N_kv, self.num_heads, -1).transpose(1, 2)    # Shape: [batch_size, num_heads, num_inputs, slot_size // num_heads].
         k = ((self.slot_size // self.num_heads) ** (-0.5)) * k
@@ -149,7 +151,6 @@ class SlotAttentionEncoder(nn.Module):
         return slots, attn, init_slots, attn_logits
     
     def slots_initialization(self, B, dtype, device, previous_slots=None):
-        # The first frame, initialize slots.
         if previous_slots is not None:
             slots_init = previous_slots
         elif self.init_method == 'shared_gaussian':
@@ -167,7 +168,7 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
     """
 
     def __init__(self, num_iterations, num_slots, input_channels, slot_size, mlp_hidden_size, pos_channels,
-                  truncate='bi-level', init_method='embedding', ms_which_enoder_layers = [6, 8, 11], concat_method = "add", num_heads = 1, drop_path = 0.0):
+                  truncate='bi-level', init_method='embedding', ms_which_enoder_layers = [6, 8, 11], concat_method = "add", num_heads = 1, drop_path = 0.0, slot_initialization=None):
         super().__init__()
         
         self.ms_which_enoder_layers = ms_which_enoder_layers
@@ -177,13 +178,16 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
                 pos_channels, truncate, init_method, num_heads, drop_path
             ) for i in range(len(ms_which_enoder_layers))
         ])
-
+        self.slot_initialization = slot_initialization
         # Set aggregation function according to provided args, default to mean
         self.agg_fct = torch.sum
         if concat_method == "mean":
             self.agg_fct = torch.mean
         elif concat_method == "max":
             self.agg_fct = torch.max
+        elif concat_method == None:
+            # then we only want the last slot from the list
+            self.agg_fct = lambda x, dim: x[-1]
         elif concat_method != "sum":
             print(f"Provided aggregation function {concat_method} does not exist, defaulting to sum")
     
@@ -192,15 +196,22 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
         attn_list = []
         init_slots_list = []
         attn_logits_list = []
-
+        old_slots = None
         for i, (sae, inp) in enumerate(zip(self.slot_attention_encoders, x)):
-            if i == 0:
-                slots, attn, init_slots, attn_logits = sae(inp, None, False)
+            if self.slot_initialization == "hierarchical":
+                if i == 0:
+                    slots, attn, init_slots, attn_logits = sae(inp, None, True if i == len(x) - 1 else False)
+                    old_slots = slots
+                else:
+                    slots, attn, init_slots, attn_logits = sae(inp, slots_list[-1], True if i == len(x) - 1 else False)
+                    # residual connection
+                    slots = slots + old_slots
             else:
-                last_SA = True if i == len(x) - 1 else False
-                slots, attn, init_slots, attn_logits = sae(inp, slots_list[-1], last_SA)
+                # TODO: does this make sense?
+                slots, attn, init_slots, attn_logits = sae(inp, None, True if i == len(x) - 1 else False)
             slots = slots.detach()
-            attn = attn.detach()
+            # TODO: do we want to detach this??
+            #attn = attn.detach() -> not done in rubens code
             slots_list.append(slots)
             attn_list.append(attn)
             init_slots_list.append(init_slots)
@@ -213,7 +224,7 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
         agg_init_slots = self.agg_fct(torch.stack(init_slots_list), dim=0)
         agg_attn_logits = self.agg_fct(torch.stack(attn_logits_list), dim=0)
 
-        return agg_slots, agg_attn, agg_init_slots, agg_attn_logits
+        return agg_slots, attn_list[-1], agg_init_slots, agg_attn_logits
 
       
 class MultiScaleSlotAttentionEncoderShared(nn.Module):
