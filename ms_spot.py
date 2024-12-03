@@ -45,7 +45,7 @@ class MSSPOT(nn.Module):
         self.slot_attn = sae_class(
             args.num_iterations, args.num_slots,
             args.d_model, args.slot_size, args.mlp_hidden_size, args.pos_channels,
-            args.truncate, args.init_method, args.ms_which_enoder_layers, args.concat_method,1,0.0, args.slot_initialization)
+            args.truncate, args.init_method, args.ms_which_enoder_layers, args.concat_method, args.slot_initialization)
 
         self.input_proj = nn.Sequential(
             linear(args.d_model, args.d_model, bias=False),

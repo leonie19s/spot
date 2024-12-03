@@ -168,7 +168,7 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
     """
 
     def __init__(self, num_iterations, num_slots, input_channels, slot_size, mlp_hidden_size, pos_channels,
-                  truncate='bi-level', init_method='embedding', ms_which_enoder_layers = [6, 8, 11], concat_method = "add", num_heads = 1, drop_path = 0.0, slot_initialization=None):
+                  truncate='bi-level', init_method='embedding', ms_which_enoder_layers = [6, 8, 11], concat_method = "add", slot_initialization=None, num_heads = 1, drop_path = 0.0):
         super().__init__()
         
         self.ms_which_enoder_layers = ms_which_enoder_layers
@@ -233,7 +233,7 @@ class MultiScaleSlotAttentionEncoderShared(nn.Module):
     """
 
     def __init__(self, num_iterations, num_slots,
-                 input_channels, slot_size, mlp_hidden_size, pos_channels, truncate='bi-level', init_method='embedding', ms_which_enoder_layers = [6, 8, 11], concat_method = "add", num_heads = 1, drop_path = 0.0):
+                 input_channels, slot_size, mlp_hidden_size, pos_channels, truncate='bi-level', init_method='embedding', ms_which_enoder_layers = [6, 8, 11], concat_method = "add", slot_initialization=None, num_heads = 1, drop_path = 0.0):
         super().__init__()
         
         self.num_iterations = num_iterations
