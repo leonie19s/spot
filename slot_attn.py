@@ -168,7 +168,7 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
     """
 
     def __init__(self, num_iterations, num_slots, input_channels, slot_size, mlp_hidden_size, pos_channels,
-                  truncate='bi-level', init_method='embedding', ms_which_enoder_layers = [6, 8, 11], concat_method = "add", slot_initialization=None, num_heads = 1, drop_path = 0.0):
+                  truncate='bi-level', init_method='embedding', ms_which_enoder_layers = [6, 8, 11], concat_method = "sum", slot_initialization=None, num_heads = 1, drop_path = 0.0):
         super().__init__()
         
         self.ms_which_enoder_layers = ms_which_enoder_layers
@@ -192,35 +192,44 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
             print(f"Provided aggregation function {concat_method} does not exist, defaulting to sum")
     
     def forward(self, x):
+
+        # Lists for storing intermediate scale results
         slots_list = []
         attn_list = []
         init_slots_list = []
         attn_logits_list = []
         old_slots = None
+
+        # Enumerate over all SA scales
         for i, (sae, inp) in enumerate(zip(self.slot_attention_encoders, x)):
+
+            # Whether this is the last layer, necessary for mlp / norm at final layer
+            is_last_layer = True if i == len(x) - 1 else False
+
+            # Hierarchical slot initialization
             if self.slot_initialization == "hierarchical":
                 if i == 0:
-                    slots, attn, init_slots, attn_logits = sae(inp, None, True if i == len(x) - 1 else False)
-                    old_slots = slots
+                    slots, attn, init_slots, attn_logits = sae(inp, None, is_last_layer)
+                    old_slots = slots.clone().detach() # detach as to not compute gradients for hierarchical slot init
                 else:
-                    slots, attn, init_slots, attn_logits = sae(inp, slots_list[-1], True if i == len(x) - 1 else False)
+                    slots, attn, init_slots, attn_logits = sae(inp, slots_list[-1], is_last_layer)
                     # residual connection
                     slots = slots + old_slots
+                    old_slots = slots.clone().detach()
+            
+            # Random slot initialization at each layer
             else:
-                # TODO: does this make sense?
-                slots, attn, init_slots, attn_logits = sae(inp, None, True if i == len(x) - 1 else False)
-            slots = slots.detach()
-            # TODO: do we want to detach this??
-            #attn = attn.detach() -> not done in rubens code
+                slots, attn, init_slots, attn_logits = sae(inp, None, is_last_layer)
+            
+            # Append to lists
             slots_list.append(slots)
             attn_list.append(attn)
             init_slots_list.append(init_slots)
             attn_logits_list.append(attn_logits)
     
+        # Aggregation across scales
         agg_slots = self.agg_fct(torch.stack(slots_list), dim=0)
-
-        #[print(tensor.min().item(), tensor.max().item()) for tensor in slots_list]
-        agg_attn = self.agg_fct(torch.stack(attn_list), dim =0)
+        # agg_attn = self.agg_fct(torch.stack(attn_list), dim =0)
         agg_init_slots = self.agg_fct(torch.stack(init_slots_list), dim=0)
         agg_attn_logits = self.agg_fct(torch.stack(attn_logits_list), dim=0)
 
