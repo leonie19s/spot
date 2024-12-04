@@ -200,6 +200,7 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
         for i, (sae, inp) in enumerate(zip(self.slot_attention_encoders, x)):
             if self.slot_initialization == "hierarchical":
                 if i == 0:
+                    # clone and detach slot init of previous slot? otherwise it is used in backprop
                     slots, attn, init_slots, attn_logits = sae(inp, None, True if i == len(x) - 1 else False)
                     old_slots = slots
                 else:
@@ -209,7 +210,7 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
             else:
                 # TODO: does this make sense?
                 slots, attn, init_slots, attn_logits = sae(inp, None, True if i == len(x) - 1 else False)
-            slots = slots.detach()
+            # slots = slots.detach() probably do not do that?
             # TODO: do we want to detach this??
             #attn = attn.detach() -> not done in rubens code
             slots_list.append(slots)
@@ -220,7 +221,7 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
         agg_slots = self.agg_fct(torch.stack(slots_list), dim=0)
 
         #[print(tensor.min().item(), tensor.max().item()) for tensor in slots_list]
-        agg_attn = self.agg_fct(torch.stack(attn_list), dim =0)
+        # agg_attn = self.agg_fct(torch.stack(attn_list), dim =0)
         agg_init_slots = self.agg_fct(torch.stack(init_slots_list), dim=0)
         agg_attn_logits = self.agg_fct(torch.stack(attn_logits_list), dim=0)
 
