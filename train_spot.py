@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.tensorboard import SummaryWriter
 import torchvision.utils as vutils
-from torchviz import make_dot
+# from torchviz import make_dot
 from typing import List
 from spot import SPOT
 from ms_spot import MSSPOT
@@ -23,7 +23,7 @@ from utils_spot import inv_normalize, cosine_scheduler, visualize, bool_flag, lo
 import models_vit
 
 # Set available devices here, do NOT use GPU 0 on node 20
-device_ids =[3]
+device_ids =[2]
 os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
 
@@ -82,7 +82,7 @@ def get_args_parser():
     parser.add_argument('--train_permutations',  type=str, default='random', help='which permutation')
     parser.add_argument('--eval_permutations',  type=str, default='standard', help='which permutation')
 
-    parser.add_argument('--ms_which_enoder_layers', type=List[int], default=[11], help= "Which block layers of the encoders are to be used for multi-scale slot attention")
+    parser.add_argument('--ms_which_enoder_layers', type=List[int], default=[9, 10, 11], help= "Which block layers of the encoders are to be used for multi-scale slot attention")
     parser.add_argument('--concat_method', type=str, default='mean', help="how the multiscale attention is concatenated, choose from ['mean', 'sum']")
     parser.add_argument("--slot_initialization", type=str, default=None, help="initialization method for slots")
     parser.add_argument('--shared_weights', type=bool, default=False, help='if the weights of the slot attention encoder module are shared')
@@ -176,14 +176,13 @@ def train(args):
     for entry in ['{}={}'.format(k, v) for k, v in vars(args).items()]:
         print(entry)
 
-    
-    print ("MS-SPOT USED \n")
+    # Create model with hyper parameters
     model = MSSPOT(encoder, args, encoder_second)
+    
     # register hooks for MSSPOT
     for name, module in model.named_modules():
         module.register_forward_hook(check_for_nan_inf)
-    
-    print ("\n=======================\n")
+    print("\n=======================\n")
 
 
 
@@ -222,6 +221,8 @@ def train(args):
 
     # TODO see if needed
     n_warmup_epochs = int(args.lr_warmup_steps/(len(train_dataset)/args.batch_size))
+
+    print (f"Number warmup epochs: {n_warmup_epochs}")
 
     #if n_warmup_epochs > args.epochs/10:
      #   print("Warmup epochs needed to be adjusted")
