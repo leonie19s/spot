@@ -229,11 +229,11 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
     
         # Aggregation across scales
         agg_slots = self.agg_fct(torch.stack(slots_list), dim=0)
-        # agg_attn = self.agg_fct(torch.stack(attn_list), dim =0)
+        agg_attn = self.agg_fct(torch.stack(attn_list), dim =0)
         agg_init_slots = self.agg_fct(torch.stack(init_slots_list), dim=0)
         agg_attn_logits = self.agg_fct(torch.stack(attn_logits_list), dim=0)
 
-        return agg_slots, attn_list[-1], agg_init_slots, agg_attn_logits
+        return agg_slots, agg_attn, agg_init_slots, agg_attn_logits
 
       
 class MultiScaleSlotAttentionEncoderShared(nn.Module):
