@@ -87,7 +87,7 @@ def get_args_parser():
     parser.add_argument("--slot_initialization", type=str, default=None, help="initialization method for slots")
     parser.add_argument('--shared_weights', type=bool, default=False, help='if the weights of the slot attention encoder module are shared')
     parser.add_argument('--data_cut', type=float, default=1, help='factor how much of the original length of the data is used')
-    
+    parser.add_argument('--log_folder_name', type=str, default=None, help='folder to save the logs and model')
     return parser
 
 def train(args):
@@ -95,7 +95,7 @@ def train(args):
     
     arg_str_list = ['{}={}'.format(k, v) for k, v in vars(args).items()]
     arg_str = '__'.join(arg_str_list)
-    log_dir = os.path.join(args.log_path, datetime.today().isoformat())
+    log_dir = os.path.join(args.log_path, datetime.today().isoformat()) if args.log_folder_name is None else os.path.join(args.log_path, args.log_folder_name)
     writer = SummaryWriter(log_dir)
     writer.add_text('hparams', arg_str)
     

@@ -19,6 +19,7 @@ from datasets import PascalVOC, COCO2017, MOVi
 from ocl_metrics import UnsupervisedMaskIoUMetric, ARIMetric
 from utils_spot import inv_normalize, cosine_scheduler, visualize, att_matching, bool_flag, load_pretrained_encoder, reduce_dataset
 import models_vit
+from typing import List
 IGNORE_INDEX = -100
 
 
@@ -44,6 +45,7 @@ def get_args_parser():
 
     parser.add_argument('--checkpoint_path', default='checkpoint.pt.tar', help='checkpoint to continue the training, loaded only if exists')
     parser.add_argument('--log_path', default='logs')
+    parser.add_argument('--log_folder_name', type=str, default=None)
     parser.add_argument('--dataset', default='coco', help='coco or voc')
     parser.add_argument('--data_path',  type=str, help='dataset path')
     parser.add_argument('--predefined_movi_json_paths', default = None,  type=str, help='For MOVi datasets, use the same subsampled images. Typically for the 2nd stage of Spot training to retain the same images')
@@ -90,9 +92,11 @@ def get_args_parser():
     parser.add_argument('--teacher_train_permutations',  type=str, default='random', help='which permutation')
     parser.add_argument('--teacher_eval_permutations',  type=str, default='random', help='which permutation')
 
-    parser.add_argument('--n_scales', type=int, default=3, help= "number of scales for the multiscale attention")
-    parser.add_argument('--concat_method', type=str, default='add', help="how the multiscale attention is concatenated, choose from ['mean', 'sum']")
-    parser.add_argument('--shared_weights', type=bool, default=True, help='if the weights of the slot attention encoder module are shared')
+    
+    parser.add_argument('--ms_which_enoder_layers', type=List[int], default=[9, 10, 11], help= "Which block layers of the encoders are to be used for multi-scale slot attention")
+    parser.add_argument('--concat_method', type=str, default='mean', help="how the multiscale attention is concatenated, choose from ['mean', 'sum']")
+    parser.add_argument("--slot_initialization", type=str, default=None, help="initialization method for slots")
+    parser.add_argument('--shared_weights', type=bool, default=False, help='if the weights of the slot attention encoder module are shared')
     parser.add_argument('--data_cut', type=float, default=1, help='factor how much of the original length of the data is used')
     
     return parser
@@ -102,7 +106,7 @@ def train(args):
     
     arg_str_list = ['{}={}'.format(k, v) for k, v in vars(args).items()]
     arg_str = '__'.join(arg_str_list)
-    log_dir = os.path.join(args.log_path, datetime.today().isoformat())
+    log_dir = os.path.join(args.log_path, datetime.today().isoformat() if args.logs_folder_name is None else args.log_folder_name)
     writer = SummaryWriter(log_dir)
     writer.add_text('hparams', arg_str)
     
@@ -174,10 +178,12 @@ def train(args):
     if args.num_cross_heads is None:
         args.num_cross_heads = args.num_heads
     
-    if args.n_scales > 1:
-        student_model = MSSPOT(encoder_new, args, encoder)
-    else:
-        student_model = SPOT(encoder_new, args, encoder)
+    # Print settings for better reproducibility / result tracking
+    print("\n=======================\n \nSettings:\n")
+    for entry in ['{}={}'.format(k, v) for k, v in vars(args).items()]:
+        print(entry)
+
+    student_model = MSSPOT(encoder_new, args, encoder)
     
     args_teacher = copy.deepcopy(args)
     args_teacher.truncate = args.teacher_truncate
@@ -186,10 +192,9 @@ def train(args):
     args_teacher.eval_permutations = args.teacher_eval_permutations
     args_teacher.finetune_blocks_after = 100
     
-    if args.n_scales > 1:
-        model = MSSPOT(encoder, args)
-    else:
-        model = SPOT(encoder, args)
+    
+    teacher_model = MSSPOT(encoder, args)
+   
 
     checkpoint = torch.load(args.teacher_checkpoint_path, map_location='cpu')
     checkpoint['model'] = {k.replace("tf_dec.", "dec."): v for k, v in checkpoint['model'].items()} # compatibility with older runs
@@ -232,12 +237,15 @@ def train(args):
     
     teacher_model = teacher_model.cuda()
     student_model = student_model.cuda()
-    
+    n_warmup_epochs = int(args.lr_warmup_steps/(len(train_dataset)/args.batch_size))
+
+    print (f"Number warmup epochs: {n_warmup_epochs}")
+
     lr_schedule = cosine_scheduler( base_value = args.lr_main,
                                     final_value = args.lr_min,
                                     epochs = args.epochs, 
                                     niter_per_ep = len(train_loader),
-                                    warmup_epochs=int(args.lr_warmup_steps/(len(train_dataset)/args.batch_size)),
+                                    warmup_epochs=n_warmup_epochs
                                     start_warmup_value=0)
 
     if args.final_ce_weight == None:
@@ -267,7 +275,7 @@ def train(args):
     ari_slot_metric = ARIMetric(foreground = True, ignore_overlaps = True).cuda()
     
     visualize_per_epoch = int(args.epochs*args.eval_viz_percent)
-    
+    print(datetime.now())
     teacher_model.eval()
     for epoch in range(start_epoch, args.epochs):
     
