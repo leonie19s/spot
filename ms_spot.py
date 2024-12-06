@@ -14,7 +14,7 @@ class MSSPOT(nn.Module):
         self.encoder = encoder
         self.second_encoder = second_encoder
         self.encoder_final_norm = args.encoder_final_norm
-        self.ms_which_enoder_layers = args.ms_which_enoder_layers
+        self.ms_which_encoder_layers = args.ms_which_encoder_layers
         for param_name, param in self.encoder.named_parameters():
             if ('blocks' in param_name):
                 block_id = int(param_name.split('.')[1])
@@ -45,7 +45,7 @@ class MSSPOT(nn.Module):
         self.slot_attn = sae_class(
             args.num_iterations, args.num_slots,
             args.d_model, args.slot_size, args.mlp_hidden_size, args.pos_channels,
-            args.truncate, args.init_method, args.ms_which_enoder_layers, args.concat_method, args.slot_initialization)
+            args.truncate, args.init_method, args.ms_which_encoder_layers, args.concat_method, args.slot_initialization)
 
         self.input_proj = nn.Sequential(
             linear(args.d_model, args.d_model, bias=False),
@@ -151,7 +151,7 @@ class MSSPOT(nn.Module):
             x = blk(x)
             if i == len(encoder.blocks) - 1 and self.encoder_final_norm:
                 x = encoder.norm(x)
-            if i in self.ms_which_enoder_layers:
+            if i in self.ms_which_encoder_layers:
                 ms_x_temp.append(x)
         
             # patch_features = x[0, 1:, :]  # Exclude CLS token

@@ -82,7 +82,7 @@ def get_args_parser():
     parser.add_argument('--train_permutations',  type=str, default='random', help='which permutation')
     parser.add_argument('--eval_permutations',  type=str, default='standard', help='which permutation')
 
-    parser.add_argument('--ms_which_enoder_layers', type=List[int], default=[9, 10, 11], help= "Which block layers of the encoders are to be used for multi-scale slot attention")
+    parser.add_argument('--ms_which_encoder_layers', type=List[int], default=[9, 10, 11], help= "Which block layers of the encoders are to be used for multi-scale slot attention")
     parser.add_argument('--concat_method', type=str, default='mean', help="how the multiscale attention is concatenated, choose from ['mean', 'sum']")
     parser.add_argument("--slot_initialization", type=str, default=None, help="initialization method for slots")
     parser.add_argument('--shared_weights', type=bool, default=False, help='if the weights of the slot attention encoder module are shared')
