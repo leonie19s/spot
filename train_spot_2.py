@@ -19,7 +19,6 @@ from datasets import PascalVOC, COCO2017, MOVi
 from ocl_metrics import UnsupervisedMaskIoUMetric, ARIMetric
 from utils_spot import inv_normalize, cosine_scheduler, visualize, att_matching, bool_flag, load_pretrained_encoder, reduce_dataset
 import models_vit
-from typing import List
 IGNORE_INDEX = -100
 
 
@@ -93,7 +92,7 @@ def get_args_parser():
     parser.add_argument('--teacher_eval_permutations',  type=str, default='random', help='which permutation')
 
     
-    parser.add_argument('--ms_which_encoder_layers', type=List[int], default=[9, 10, 11], help= "Which block layers of the encoders are to be used for multi-scale slot attention")
+    parser.add_argument('--ms_which_encoder_layers', type=str, default="9,10,11", help= "Which block layers of the encoders are to be used for multi-scale slot attention, values as ints separated by commas with no whitespace")
     parser.add_argument('--concat_method', type=str, default='mean', help="how the multiscale attention is concatenated, choose from ['mean', 'sum']")
     parser.add_argument("--slot_initialization", type=str, default=None, help="initialization method for slots")
     parser.add_argument('--shared_weights', type=bool, default=False, help='if the weights of the slot attention encoder module are shared')
@@ -104,6 +103,12 @@ def get_args_parser():
 def train(args):
     torch.manual_seed(args.seed)
     
+    # Directly transform string of layers into proper list
+    args_layers_list = list(map(int, args.ms_which_encoder_layers.split(',')))
+    assert len(args_layers_list) > 0, "ms_which_encoder_layers must contain at least one integer"
+    assert all(isinstance(x, int) for x in args_layers_list), "ms_which_encoder_layers must contain only integers, separated by commas"
+    args.ms_which_encoder_layers = args_layers_list
+                   
     arg_str_list = ['{}={}'.format(k, v) for k, v in vars(args).items()]
     arg_str = '__'.join(arg_str_list)
     log_dir = os.path.join(args.log_path, datetime.today().isoformat() if args.logs_folder_name is None else args.log_folder_name)
