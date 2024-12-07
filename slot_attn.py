@@ -184,7 +184,7 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
         if concat_method == "mean":
             self.agg_fct = torch.mean
         elif concat_method == "max":
-            self.agg_fct = torch.max
+            self.agg_fct = lambda x, dim: torch.max(x, dim = dim).values
         elif concat_method == "None" or concat_method == None:
             # then we only want the last slot from the list
             self.agg_fct = lambda x, dim: x[-1]
