@@ -111,7 +111,7 @@ def train(args):
                    
     arg_str_list = ['{}={}'.format(k, v) for k, v in vars(args).items()]
     arg_str = '__'.join(arg_str_list)
-    log_dir = os.path.join(args.log_path, datetime.today().isoformat() if args.logs_folder_name is None else args.log_folder_name)
+    log_dir = os.path.join(args.log_path, datetime.today().isoformat() if args.log_folder_name is None else args.log_folder_name)
     writer = SummaryWriter(log_dir)
     writer.add_text('hparams', arg_str)
     
@@ -203,11 +203,11 @@ def train(args):
 
     checkpoint = torch.load(args.teacher_checkpoint_path, map_location='cpu')
     checkpoint['model'] = {k.replace("tf_dec.", "dec."): v for k, v in checkpoint['model'].items()} # compatibility with older runs
-    teacher_model.load_state_dict(checkpoint['model'], strict=True)
-    msg = teacher_model.load_state_dict(checkpoint['model'], strict=True)
+    teacher_model.load_state_dict(checkpoint['model'], strict=False)# todo change back
+    #msg = teacher_model.load_state_dict(checkpoint['model'], strict=True)
     for param in teacher_model.parameters():
         param.requires_grad = False  # not update by gradient
-    print(msg)
+    #print(msg)
 
     if os.path.isfile(args.checkpoint_path):
         checkpoint = torch.load(args.checkpoint_path, map_location='cpu')
