@@ -1,3 +1,4 @@
+import numpy as np
 import os
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -13,6 +14,18 @@ SIZE_GUIDANCE = {
     event_accumulator.TENSORS: 1,
     event_accumulator.SCALARS: 0
 }
+
+# Some pretty colors, with assignment to proper fusion methods
+COLORS = {
+    "baseline": "#7F7F91",  # grey
+    "residual": "#FFA600",  # orange
+    "mean": "#3D1D9C",  # blue
+    "max": "#C7007C",    # violet
+    "sum": "#FF4647" # salmon
+}
+
+# Flag whether the (slots) should be removed from labels in plots
+REMOVE_SLOTS_FROM_LABELS = True
 
 # Constant base path to logging directory and plot path
 BASE_PATH = "logs/"
@@ -57,9 +70,83 @@ def results_for_run(run_name):
     return scalar_df
 
 
+def get_color_for_run(run):
+    for fusion, col in COLORS.items():
+        if fusion in run:
+            return col
+    raise Exception(f"No respective color for run {run} could be found, must include fusion method")
+
+
+def make_metrics_pretty(metrics):
+    if REMOVE_SLOTS_FROM_LABELS:
+        metrics = [m.replace(" (slots)", "") for m in metrics]
+    return [r"${" + m.replace("mbo", "mBO").replace("miou", "mIoU") + "}$" for m in metrics]
+
+
+def plot_one_metric(runs, run_dfs, pretty_labels, metric = "miou (slots)"):
+    """
+        Plots one metric over time.
+    """
+
+    # Set modern style
+    plt.style.use("ggplot")
+
+    # Create the plot
+    fig, ax = plt.subplots(1, 1)
+    ax.grid(True, linestyle="--", linewidth=0.8, alpha=0.5, zorder=-1)
+
+    # Plot the results
+    for idx, run in enumerate(runs):
+        label = run.split("/")[-1] if len(pretty_labels) == 0 else pretty_labels[idx]
+        ax.plot(run_dfs[run].index , run_dfs[run][metric], label=label, color=get_color_for_run(run))
+
+    # Aesthetics and saving
+    plt.xlabel("Epochs")
+    plt.ylabel(make_metrics_pretty([metric])[0])
+    plt.legend()
+    plt.savefig(os.path.join(PLOT_PATH, f"comparison_{metric}"))
+
+
+def plot_comparison_in_multiple_metrics(
+    runs, run_dfs, pretty_labels, metrics = np.array(["mbo_c (slots)", "mbo_i (slots)", "miou (slots)"])
+):
+    # Set modern style
+    plt.style.use("ggplot")
+
+    # Create the plot
+    fig, ax = plt.subplots(1, 1)
+    ax.grid(True, linestyle='--', linewidth=0.9, alpha=0.75, zorder=-1)
+
+    # Create the ticks with the metrics as labels
+    diff_between_metrics = int(len(runs) * 2)
+    tick_lst = [diff_between_metrics * x for x in range(len(metrics))]
+    tick_label_lst = make_metrics_pretty(metrics)
+    ax.set_xticks(tick_lst, labels=tick_label_lst)
+
+    # Create offset list for aligning
+    offsets = list(range(-int(len(runs)/2), int((len(runs) + 1)/2)))
+    if len(runs) % 2 == 0:
+        offsets[int(len(runs)/2):] = [x+1 for x in offsets[int(len(runs)/2):]]
+        offsets = [x + 0.5 if x < 0 else x - 0.5 for x in offsets]
+
+    # Create the bars with respective colors, labels and values
+    for idx in range(len(run_dfs)):
+        run = runs[idx]
+        data = run_dfs[run].iloc[-1][metrics].values
+        label = run.split("/")[-1] if len(pretty_labels) == 0 else pretty_labels[idx]
+        ax.bar(np.array(list(range(len(metrics)))) * diff_between_metrics + offsets[idx], data, color=get_color_for_run(run), label=label, zorder=2, edgecolor="black") 
+
+    # Aesthetics and saving
+    ax.set_ylabel("Score")
+    ax.set_ylim(0, 70)
+    plt.legend()
+    plt.savefig(os.path.join(PLOT_PATH, f"comparison_all_metrics"), bbox_inches="tight")
+
+
 def main():
 
     # INSERT ALL RELEVANT RUNS FOR PLOTITNG HERE
+
     runs = [
         "baseline/dinosaur_baseline",
         "ablations/mean_9_10_11",
@@ -68,32 +155,33 @@ def main():
         "ablations/max_9_10_11"
     ]
 
-    # WHICH METRIC IS TO BE PLOTTED
-    # Possible metrics: 
-    # 'mse', 'ari (slots)', 'ari (decoder)', 'mbo_c', 'mbo_i', 'miou', 
-    # 'mbo_c (slots)', 'mbo_i (slots)', 'miou (slots)', 'best_loss'
-    metric = "miou (slots)"
+    # Optional: Pretty labels, name them corresponding runs above. If none are to be used: leave as empty list
+    pretty_labels = [
+        "Baseline",
+        "Mean",
+        "Residual",
+        "Sum",
+        "Max"
+    ]
+
+    # Sanity check
+    assert len(runs) == len(pretty_labels) or len(pretty_labels) == 0, "Either supply as many labels as there are runs, or none at all"
 
     # Reads in all dfs and stores them in a dictionary
     run_dfs = {}
     for run in runs:
         run_dfs[run] = results_for_run(run)
 
-    # Create the plot
-    fig, ax = plt.subplots(1, 1)
-    ax.grid(True, linestyle="--", linewidth=0.8, alpha=0.5, zorder=-1)
+    # Basic plot for one metric
 
-    # Plot the results
-    for run in runs:
-        ax.plot(run_dfs[run].index , run_dfs[run][metric], label=run.split("/")[-1])
+    # WHICH METRIC IS TO BE PLOTTED
+    # Possible metrics: 
+    # 'mse', 'ari (slots)', 'ari (decoder)', 'mbo_c', 'mbo_i', 'miou', 
+    # 'mbo_c (slots)', 'mbo_i (slots)', 'miou (slots)', 'best_loss'
+    plot_one_metric(runs, run_dfs, pretty_labels, "miou (slots)")
 
-    # Aesthetics
-    plt.xlabel("Epochs")
-    plt.ylabel(metric)
-    plt.legend()
-    plt.savefig(os.path.join(PLOT_PATH, metric))
-
-    return
+    # Plot comparison in all metrics
+    plot_comparison_in_multiple_metrics(runs, run_dfs, pretty_labels, np.array(["mbo_c (slots)", "mbo_i (slots)", "miou (slots)"]))
 
 
 if __name__ == "__main__":
