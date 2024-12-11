@@ -23,7 +23,7 @@ from utils_spot import inv_normalize, cosine_scheduler, visualize, bool_flag, lo
 import models_vit
 
 # Set available devices here, do NOT use GPU 0 on node 20
-device_ids =[2]
+device_ids =[6]
 os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
 
@@ -92,7 +92,7 @@ def get_args_parser():
 
 def train(args):
     torch.manual_seed(args.seed)
-    
+    print(f"device ids: {device_ids}")
     # Directly transform string of layers into proper list
     args_layers_list = list(map(int, args.ms_which_encoder_layers.split(',')))
     assert len(args_layers_list) > 0, "ms_which_encoder_layers must contain at least one integer"
