@@ -68,7 +68,6 @@ parser.add_argument('--eval_permutations',  type=str, default='standard', help='
 
 parser.add_argument('--n_scales', type=int, default=3, help= "number of scales for the multiscale attention")
 parser.add_argument('--concat_method', type=str, default='add', help="how the multiscale attention is concatenated, choose from ['mean', 'sum']")
-parser.add_argument('--shared_weights', type=bool, default=True, help='if the weights of the slot attention encoder module are shared')
 parser.add_argument('--data_cut', type=float, default=1, help='factor how much of the original length of the data is used')
     
 

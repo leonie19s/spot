@@ -263,7 +263,7 @@ class SPOT(nn.Module):
         slots, slots_attns, _ = self.slot_attn(emb_target)
         return emb_target, slots, slots_attns
 
-    def forward(self, image):
+    def forward(self, image, image_paths):
         """
         image: batch_size x img_channels x H x W
         

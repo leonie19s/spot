@@ -58,7 +58,7 @@ class PascalVOC(Dataset):
             
             img = self.train_transform(img)
             
-            return img
+            return img, img_fp
    
         elif self.split=='val':
             
@@ -75,14 +75,14 @@ class PascalVOC(Dataset):
             
             ignore_mask = torch.zeros((1,self.mask_size,self.mask_size), dtype=torch.long) # There is no overlapping in VOC
 
-            return img, mask_instance, mask_class, ignore_mask
+            return img, img_fp, mask_instance, mask_class, ignore_mask
         
         else:
             
             mask_class    = Image.open(mask_fp_class)
             mask_instance = Image.open(mask_fp_instance)
             
-            return img, mask_instance.long(), mask_instance.squeeze()
+            return img, img_fp, mask_instance.long(), mask_instance.squeeze()
 
 
     def __len__(self):
@@ -139,13 +139,14 @@ class COCO2017(Dataset):
         self.image_size = image_size
 
     def __getitem__(self, index):
-        img, mask_instance, mask_class, mask_ignore = self._make_img_gt_point_pair(index)
+        img, imgpath, mask_instance, mask_class, mask_ignore = self._make_img_gt_point_pair(index)
 
         if self.split == "train" and (self.return_gt_in_train is False):
             
             img = self.train_transform(img)
             
-            return img
+            return img, imgpath
+        
         elif self.split == "train" and (self.return_gt_in_train is True):
             img = self.val_transform_image(img)
             mask_class = self.val_transform_mask(mask_class)
@@ -162,7 +163,7 @@ class COCO2017(Dataset):
             mask_instance = mask_instance.squeeze().long()
             mask_ignore = mask_ignore.squeeze().long()
 
-            return img, mask_instance, mask_class, mask_ignore        
+            return img, imgpath, mask_instance, mask_class, mask_ignore        
         elif self.split =='val':
 
             img = self.val_transform_image(img)
@@ -170,7 +171,7 @@ class COCO2017(Dataset):
             mask_instance = self.val_transform_mask(mask_instance).squeeze().long()
             mask_ignore = self.val_transform_mask(mask_ignore).squeeze().long().unsqueeze(0)
             
-            return img, mask_instance, mask_class, mask_ignore
+            return img, imgpath, mask_instance, mask_class, mask_ignore
         else:
             raise
 
@@ -179,13 +180,14 @@ class COCO2017(Dataset):
         img_id = self.ids[index]
         img_metadata = coco.loadImgs(img_id)[0]
         path = img_metadata['file_name']
-        _img = Image.open(os.path.join(self.img_dir, path)).convert('RGB')
+        full_path = os.path.join(self.img_dir, path)
+        _img = Image.open(full_path).convert('RGB')
         cocotarget = coco.loadAnns(coco.getAnnIds(imgIds=img_id))
         _targets = self._gen_seg_n_insta_masks(cocotarget, img_metadata['height'], img_metadata['width'])
         mask_class = Image.fromarray(_targets[0])
         mask_instance = Image.fromarray(_targets[1])
         mask_ignore = Image.fromarray(_targets[2])
-        return _img, mask_instance, mask_class, mask_ignore
+        return _img, full_path, mask_instance, mask_class, mask_ignore
 
     def _gen_seg_n_insta_masks(self, target, h, w):
         seg_mask = np.zeros((h, w), dtype=np.uint8)

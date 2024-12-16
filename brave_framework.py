@@ -1,20 +1,31 @@
-from utils_spot import *
-from slot_attn import MultiScaleSlotAttentionEncoder
-from transformer import TransformerDecoder
-from mlp import MlpDecoder
 import torch
 import random
 import math
+import torch
+import torch.nn as nn
+from transformers import BeitModel, ViTMAEModel, AutoImageProcessor, AutoProcessor, CLIPVisionModel
+from typing import Any
+from PIL import Image
+from utils_spot import *
+from slot_attn import BraveSlotAttentionEncoder
+from transformer import TransformerDecoder
+from mlp import MlpDecoder
 
-class MSSPOT(nn.Module):
-    def __init__(self, encoder, args, second_encoder=None):
-        super().__init__()
 
-        self.which_encoder = args.which_encoder
-        self.encoder = encoder
-        self.second_encoder = second_encoder
-        self.encoder_final_norm = args.encoder_final_norm
-        self.ms_which_encoder_layers = args.ms_which_encoder_layers
+
+class DinoEncoder():
+    def __init__(self, args):
+        self.encoder = torch.hub.load('facebookresearch/dino:main', 'dino_vitb16').eval()
+
+        # All classes need these parameters set to initialize a corresponding slot attention module properly
+        # Can be found out by just running an exemplary image, output is [batch_size, num_tokens, d_model]
+        self.num_tokens = 196
+        self.d_model = 768
+
+        # Need to set this too: Does it need read tensors as input or image paths
+        self.img_paths_as_input = False
+
+        # Set requires grad to False for the encoder parameters
         for param_name, param in self.encoder.named_parameters():
             if ('blocks' in param_name):
                 block_id = int(param_name.split('.')[1])
@@ -25,26 +36,219 @@ class MSSPOT(nn.Module):
             else:
                 param.requires_grad = False  # not update by gradient
             
+    
+    def __call__(self, x):
+
+        # Prepare input
+        x = self.encoder.prepare_tokens(x)
+
+        # encoder.blocks are ModuleList
+        for blk in self.encoder.blocks:
+            x = blk(x)
+        x = self.encoder.norm(x)
+
+        # Remove the CLS
+        return x[:, 1:]
+
+
+class ClipEncoder():
+    def __init__(self, args):
+
+        # TOOD: Use clip-vit-large for better performance? check this
+        self.processor = AutoProcessor.from_pretrained("openai/clip-vit-base-patch16", use_fast=True)
+        self.encoder = CLIPVisionModel.from_pretrained("openai/clip-vit-base-patch16")
+
+        # All classes need these parameters set to initialize a corresponding slot attention module properly
+        # Can be found out by just running an exemplary image, output is [batch_size, num_tokens, d_model]
+        self.num_tokens = 196
+        self.d_model = 768
+
+        # Need to set this too: Does it need read tensors as input or image paths
+        self.img_paths_as_input = True
+
+        # Set requires grad to False for the encoder parameters
+        for param_name, param in self.encoder.named_parameters():
+            if ('blocks' in param_name):
+                block_id = int(param_name.split('.')[1])
+                if block_id >= args.finetune_blocks_after:
+                    param.requires_grad = True  # update by gradient
+                else:
+                    param.requires_grad = False  # not update by gradient
+            else:
+                param.requires_grad = False  # not update by gradient
+
+    def __call__(self, img_paths):
+        
+        # Preprocessing
+        imgs = [Image.open(p) for p in img_paths]
+        inputs = self.processor(images=imgs, return_tensors="pt")
+
+        # Cast to CUDA
+        inputs = {key: value.to("cuda") for key, value in inputs.items()}
+
+        # Output has last_hidden_state (output of last layer) and hidden_sattes (Tuple of hidden states across all layers).
+        # If needed for MSA, hidden_states can be used to access embedding across scales. Can also have attentions if
+        # output_attentions=True is set.x
+        outp = self.encoder(**inputs)
+
+        # Delete to avoid OOM
+        del imgs, inputs
+
+        # Last hidden state has shape [batch, num_tokens + CLS, d_model], remove class token
+        return outp.last_hidden_state[:, 1:]
+
+
+class BeitEncoder():
+    def __init__(self, args):
+
+        self.processor = AutoImageProcessor.from_pretrained("microsoft/beit-base-patch16-224-pt22k", use_fast=True)
+        self.encoder = BeitModel.from_pretrained("microsoft/beit-base-patch16-224-pt22k")
+
+        # All classes need these parameters set to initialize a corresponding slot attention module properly
+        # Can be found out by just running an exemplary image, output is [batch_size, num_tokens, d_model]
+        self.num_tokens = 196
+        self.d_model = 768
+
+        # Need to set this too: Does it need read tensors as input or image paths
+        self.img_paths_as_input = True
+
+        # Set requires grad to False for the encoder parameters
+        for param_name, param in self.encoder.named_parameters():
+            if ('blocks' in param_name):
+                block_id = int(param_name.split('.')[1])
+                if block_id >= args.finetune_blocks_after:
+                    param.requires_grad = True  # update by gradient
+                else:
+                    param.requires_grad = False  # not update by gradient
+            else:
+                param.requires_grad = False  # not update by gradient
+
+    def __call__(self, img_paths):
+        # Preprocessing
+        imgs = [Image.open(p) for p in img_paths]
+        inputs = self.processor(images=imgs, return_tensors="pt")
+
+        # Cast to CUDA
+        inputs = {key: value.to("cuda") for key, value in inputs.items()}
+
+        # Output has last_hidden_state (output of last layer) and hidden_sattes (Tuple of hidden states across all layers).
+        # If needed for MSA, hidden_states can be used to access embedding across scales. Can also have attentions if
+        # output_attentions=True is set.x
+        outp = self.encoder(**inputs)
+
+        # Delete to avoid OOM
+        del imgs, inputs
+
+        # Last hidden state has shape [batch, num_tokens + CLS, d_model], remove class token
+        return outp.last_hidden_state[:, 1:]
+
+
+class MAEEncoder():
+    def __init__(self, args):
+        self.processor = AutoImageProcessor.from_pretrained("facebook/vit-mae-base", use_fast=True)
+        self.encoder = ViTMAEModel.from_pretrained("facebook/vit-mae-base")
+
+        # Turn off masking! We are not fine-tuning anymore just inference, so we do NOT want the
+        # model to perform masking anymore, otherwise the embedding size is reduced
+        self.encoder.config.mask_ratio = 0.0
+
+        # All classes need these parameters set to initialize a corresponding slot attention module properly
+        # Can be found out by just running an exemplary image, output is [batch_size, num_tokens, d_model]
+        self.num_tokens = 196
+        self.d_model = 768
+
+        # Need to set this too: Does it need read tensors as input or image paths
+        self.img_paths_as_input = True
+
+        # Set requires grad to False for the encoder parameters
+        for param_name, param in self.encoder.named_parameters():
+            if ('blocks' in param_name):
+                block_id = int(param_name.split('.')[1])
+                if block_id >= args.finetune_blocks_after:
+                    param.requires_grad = True  # update by gradient
+                else:
+                    param.requires_grad = False  # not update by gradient
+            else:
+                param.requires_grad = False  # not update by gradient
+
+    def __call__(self, img_paths):
+
+        # Preprocessing
+        imgs = [Image.open(p) for p in img_paths]
+        inputs = self.processor(images=imgs, return_tensors="pt")
+
+        # Cast to CUDA
+        inputs = {key: value.to("cuda") for key, value in inputs.items()}
+
+        # Output has last_hidden_state (output of last layer) and hidden_sattes (Tuple of hidden states across all layers).
+        # If needed for MSA, hidden_states can be used to access embedding across scales. Can also have attentions if
+        # output_attentions=True is set.x
+        outp = self.encoder(**inputs)
+
+        # Delete to avoid OOM
+        del imgs, inputs
+
+        # Last hidden state has shape [batch, num_tokens + CLS, d_model]
+        # Remove class token
+        return outp.last_hidden_state[:, 1:]
+
+
+class BraveEncoder():
+    def __init__(self, args):
+
+        # Load in the different encoders. Make sure DinoEncoder is the last!
+        self.encoder_suite = [
+            ClipEncoder(args),
+            MAEEncoder(args),
+            DinoEncoder(args)
+        ]   # TODO: Torch.nn.moduleList?
+
+        assert all(
+            [x.num_tokens == self.encoder_suite[-1].num_tokens for x in self.encoder_suite]
+        ), "All encoders must have the same number of tokens to enable attention mask fusing"
+
+    def __call__(self, images, image_paths):
+        encoder_outputs = []
+        for e in self.encoder_suite:
+            encoder_outputs.append(e(image_paths if e.img_paths_as_input else images))
+        return encoder_outputs
+
+    def eval(self):
+        for e in self.encoder_suite:
+            e.encoder = e.encoder.eval()
+        return self
+
+    def cuda(self):
+        for e in self.encoder_suite:
+            e.encoder = e.encoder.cuda()
+        return self
+
+
+class BraveSPOT(nn.Module):
+    def __init__(self, encoder, args, second_encoder=None):
+        super().__init__()
+
+        self.which_encoder = args.which_encoder
+        self.encoder = encoder
+        self.second_encoder = second_encoder
+        self.encoder_final_norm = args.encoder_final_norm
+        self.ms_which_encoder_layers = args.ms_which_encoder_layers            
         if self.second_encoder is not None:
             for param in self.second_encoder.parameters():
                 param.requires_grad = False  # not update by gradient
 
-        # Estimate number of tokens for images of size args.image_size and
-        # embedding size (d_model)
-        with torch.no_grad():
-            x = torch.rand(1, args.img_channels, args.image_size, args.image_size)
-            x = self.forward_encoder(x, self.encoder)
-            _, num_tokens, d_model = x[-1].shape
+        # Get number of tokens for images of size args.image_size and embedding size (d_model)
+        num_tokens = self.encoder.encoder_suite[-1].num_tokens  # needed in the decoder, so should be of the model that provides the embedded target
+        d_model = self.encoder.encoder_suite[-1].d_model
 
         args.d_model = d_model
-
         self.num_slots = args.num_slots
         self.d_model = args.d_model # input_channels
         
-        self.slot_attn = MultiScaleSlotAttentionEncoder(
-            args.num_iterations, args.num_slots,
-            args.d_model, args.slot_size, args.mlp_hidden_size, args.pos_channels,
-            args.truncate, args.init_method, args.ms_which_encoder_layers, args.concat_method, args.slot_initialization)
+        self.slot_attn = BraveSlotAttentionEncoder(
+            self.encoder, args.num_iterations, args.num_slots,
+            args.slot_size, args.mlp_hidden_size, args.pos_channels,
+            args.truncate, args.init_method, args.concat_method)
 
         self.input_proj = nn.Sequential(
             linear(args.d_model, args.d_model, bias=False),
@@ -135,39 +339,10 @@ class MSSPOT(nn.Module):
             self.remove_handle = self.dec._modules["blocks"][-1]._modules["encoder_decoder_attn"]._modules["attn_dropout"].register_forward_pre_hook(hook_fn_forward_attn)
 
 
-    def forward_encoder(self, x, encoder):
+    def forward_encoder(self, x, encoder, image_paths):
         encoder.eval()
 
-        if self.which_encoder in ['dinov2_vitb14', 'dinov2_vits14', 'dinov2_vitb14_reg', 'dinov2_vits14_reg']:
-            x = encoder.prepare_tokens_with_masks(x, None)
-        else:
-            x = encoder.prepare_tokens(x)
-
-        ms_x_temp = [] # List of ModuleList
-        ms_x =[]
-        # encoder.blocks are ModuleList
-        for i, blk in enumerate(encoder.blocks):
-            x = blk(x)
-            if i == len(encoder.blocks) - 1 and self.encoder_final_norm:
-                x = encoder.norm(x)
-            if i in self.ms_which_encoder_layers:
-                ms_x_temp.append(x)
-        
-            # patch_features = x[0, 1:, :]  # Exclude CLS token
-            # spatial_features = patch_features.mean(dim=-1).reshape(14, 14)
-            # plt.imsave(f"{i}.png", spatial_features)
-
-        offset = 1
-        if self.which_encoder in ['dinov2_vitb14_reg', 'dinov2_vits14_reg']:
-            offset += encoder.num_register_tokens
-        elif self.which_encoder in ['simpool_vits16']:
-            offset += -1
-
-        for x in ms_x_temp:
-            x = x[:, offset :] # remove the [CLS] and (if they exist) registers tokens 
-            ms_x.append(x)
-        
-        return ms_x
+        return encoder(x, image_paths)
 
     
     def forward_decoder(self, slots, emb_target):
@@ -256,7 +431,7 @@ class MSSPOT(nn.Module):
 
         return mean_dec_output, mean_dec_slots_attns
 
-    def get_embeddings_n_slots(self, image):
+    def get_embeddings_n_slots(self, image, image_paths):
         """
         image: batch_size x img_channels x H x W
         TODO: where is this called?
@@ -264,7 +439,7 @@ class MSSPOT(nn.Module):
 
         B, _, H, W = image.size()
         with torch.no_grad():
-            emb_target = self.forward_encoder(image, self.encoder) # List of ModuleList
+            emb_target = self.forward_encoder(image, self.encoder, image_paths) # List of ModuleList
         # emb_target shape: B, N, D
 
         # Apply the slot attention
@@ -277,10 +452,10 @@ class MSSPOT(nn.Module):
         """
         
         B, _, H, W = image.size()
-        emb_input_lst = self.forward_encoder(image, self.encoder)# forward encoder returns a list!
+        emb_input_lst = self.forward_encoder(image, self.encoder, image_paths)# forward encoder returns a list!
         with torch.no_grad():
             if self.second_encoder is not None:
-                emb_target_lst = self.forward_encoder(image, self.second_encoder) # TODO handle second encoder as multi-scale
+                emb_target_lst = self.forward_encoder(image, self.second_encoder, image_paths) # TODO handle second encoder as multi-scale
             else:
                 emb_target_lst = [emb_input.clone().detach() for emb_input in emb_input_lst]
         # emb_target shape: B, N, D ([64, 196, 768])

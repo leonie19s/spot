@@ -179,17 +179,18 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
             ) for i in range(len(ms_which_encoder_layers))
         ])
         self.slot_initialization = slot_initialization
+        
         # Set aggregation function according to provided args, default to mean
-        self.agg_fct = torch.sum
-        if concat_method == "mean":
-            self.agg_fct = torch.mean
+        self.agg_fct = torch.mean
+        if concat_method == "sum":
+            self.agg_fct = torch.sum
         elif concat_method == "max":
             self.agg_fct = lambda x, dim: torch.max(x, dim = dim).values
         elif concat_method == "None" or concat_method == None:
             # then we only want the last slot from the list
             self.agg_fct = lambda x, dim: x[-1]
-        elif concat_method != "sum":
-            print(f"Provided aggregation function {concat_method} does not exist, defaulting to sum")
+        elif concat_method != "mean":
+            print(f"Provided aggregation function {concat_method} does not exist, defaulting to mean")
     
     def forward(self, x):
 
@@ -235,106 +236,61 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
 
         return agg_slots, agg_attn, agg_init_slots, agg_attn_logits
 
-      
-class MultiScaleSlotAttentionEncoderShared(nn.Module):
+
+class BraveSlotAttentionEncoder(nn.Module):
     """
-        Mutli-Scale Slot Attention Encoder where all weights are shared, i.e. every scale shares the same encoder
+        TODO
     """
 
-    def __init__(self, num_iterations, num_slots,
-                 input_channels, slot_size, mlp_hidden_size, pos_channels, truncate='bi-level', init_method='embedding', ms_which_encoder_layers = [9, 10, 11], concat_method = "add", slot_initialization=None, num_heads = 1, drop_path = 0.0):
+    def __init__(self, brave_encoder, num_iterations, num_slots, slot_size, mlp_hidden_size, pos_channels,
+                  truncate='bi-level', init_method='embedding', concat_method = "sum", num_heads = 1, drop_path = 0.0):
         super().__init__()
-        
-        self.num_iterations = num_iterations
-        self.num_slots = num_slots
-        self.input_channels = input_channels
-        self.slot_size = slot_size
-        self.mlp_hidden_size = mlp_hidden_size
-        self.pos_channels = pos_channels
-        self.init_method = init_method
 
-        self.layer_norm = nn.LayerNorm(input_channels)
-        self.mlp = nn.Sequential(
-            linear(input_channels, input_channels, weight_init='kaiming'),
-            nn.ReLU(),
-            linear(input_channels, input_channels))
-        
-        self.ms_which_encoder_layers = ms_which_encoder_layers
-        self.concat_method = concat_method
-        assert init_method in ['shared_gaussian', 'embedding']
-        if init_method == 'shared_gaussian':
-            # Parameters for Gaussian init (shared by all slots).
-            self.slot_mu = nn.Parameter(torch.zeros(1, 1, slot_size))
-            self.slot_log_sigma = nn.Parameter(torch.zeros(1, 1, slot_size))
-            nn.init.xavier_uniform_(self.slot_mu)
-            nn.init.xavier_uniform_(self.slot_log_sigma)
-        elif init_method == 'embedding':
-            self.slots_init = nn.Embedding(num_slots, slot_size)
-            nn.init.xavier_uniform_(self.slots_init.weight)
-        else:
-            raise NotImplementedError
-        
-        self.slot_attention = SlotAttention(
-            num_iterations,
-            input_channels, slot_size, mlp_hidden_size, truncate, num_heads, drop_path=drop_path)
-        
-    def forward(self, x):
-        # x is a ModuleList?
-        # `image` has shape: [n_scales ,batch_size, img_channels, img_height, img_width].
-        # `encoder_grid` has shape: [batch_size, pos_channels, enc_height, enc_width].
-        
-        B, *_ = x[0].size() # batch size?
-        dtype = x[0].dtype
-        device = x[0].device
-        
-        ms_slots = []
-        ms_attn = []
-        ms_attn_logits = []
-        ms_init_slots = []
+        # Create Slot Attention Encoder for each encoder of suite, make sure to use proper parameters (Input channels = d_model)
+        slot_att_modules = []
 
-        for i in range(len(self.ms_which_encoder_layers)):
-            init_slots = self.slots_initialization(B, dtype, device)
-            ms_init_slots.append(init_slots)
-            # `slots` has shape: [batch_size, num_slots, slot_size].
-            # `attn` has shape: [batch_size, enc_height * enc_width, num_slots].
-            x_item = self.mlp(self.layer_norm(x[i]))
-           
-            # `x` has shape: [batch_size, enc_height * enc_width, cnn_hidden_size].
-            slots, attn, attn_logits = self.slot_attention(x_item, init_slots)
-            ms_slots.append(slots)
-            ms_attn.append(attn)
-            ms_attn_logits.append(attn_logits)
-        
-        return self.concat_slot_attention(self.concat_method, ms_slots, ms_attn, ms_init_slots, ms_attn_logits)
-        
+        for enc in brave_encoder.encoder_suite:
+            slot_att_modules.append(
+                SlotAttentionEncoder(
+                    num_iterations, num_slots, enc.d_model, slot_size, mlp_hidden_size,
+                    pos_channels, truncate, init_method, num_heads, drop_path
+                ) 
+            )
+
+        # Create module list
+        self.slot_attention_encoders = nn.ModuleList(slot_att_modules)
+
+        # Set aggregation function according to provided args, default to mean
+        self.agg_fct = torch.mean
+        if concat_method == "sum":
+            self.agg_fct = torch.sum
+        elif concat_method == "max":
+            self.agg_fct = lambda x, dim: torch.max(x, dim = dim).values
+        elif concat_method != "mean":
+            print(f"Provided aggregation function {concat_method} does not exist, defaulting to mean")
     
-    def concat_slot_attention(self, concat_method, ms_slots, ms_attn, ms_init_slots, ms_attn_logits):
-        if concat_method == "add":
-            ms_slots = torch.stack(ms_slots).sum(0)
-            # todo: does this make sense?
-            ms_attn = torch.stack(ms_attn).sum(0)
-            ms_attn_logits = torch.stack(ms_attn_logits).sum(0)
-            ms_init_slots = torch.stack(ms_init_slots).sum(0)
+    def forward(self, x):
 
-        elif concat_method == "mean":
-            ms_slots = torch.stack(ms_slots).mean(0)
-            ms_attn = torch.stack(ms_attn).mean(0)
-            ms_attn_logits = torch.stack(ms_attn_logits).mean(0)
-            ms_init_slots = torch.stack(ms_init_slots).mean(0)
-        elif concat_method== "residual":
-           # TODO: implement!!
-            raise NotImplementedError
-        else:
-            raise NotImplementedError
-        
-        return ms_slots, ms_attn, ms_init_slots, ms_attn_logits
+        # Lists for storing intermediate scale results
+        slots_list = []
+        attn_list = []
+        init_slots_list = []
+        attn_logits_list = []
 
-    def slots_initialization(self, B, dtype, device):
-        # The first frame, initialize slots.
-        if self.init_method == 'shared_gaussian':
-            slots_init = torch.empty((B, self.num_slots, self.slot_size), dtype=dtype, device=device).normal_()
-            slots_init = self.slot_mu + torch.exp(self.slot_log_sigma) * slots_init
-        elif self.init_method == 'embedding':
-            slots_init = self.slots_init.weight.expand(B, -1, -1).contiguous()
-        
-        return slots_init
+        # Enumerate over all SA scales
+        for i, (sae, inp) in enumerate(zip(self.slot_attention_encoders, x)):
+            slots, attn, init_slots, attn_logits = sae(inp, None, True)
+            
+            # Append to lists
+            slots_list.append(slots)
+            attn_list.append(attn)
+            init_slots_list.append(init_slots)
+            attn_logits_list.append(attn_logits)
+    
+        # Aggregation across scales
+        agg_slots = self.agg_fct(torch.stack(slots_list), dim=0)
+        agg_attn = self.agg_fct(torch.stack(attn_list), dim =0)
+        agg_init_slots = self.agg_fct(torch.stack(init_slots_list), dim=0)
+        agg_attn_logits = self.agg_fct(torch.stack(attn_logits_list), dim=0)
+
+        return agg_slots, agg_attn, agg_init_slots, agg_attn_logits

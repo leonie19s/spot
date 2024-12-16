@@ -15,7 +15,7 @@ from torch.utils.tensorboard import SummaryWriter
 import torchvision.utils as vutils
 # from torchviz import make_dot
 from typing import List
-from spot import SPOT
+from brave_framework import BraveEncoder, BraveSPOT
 from ms_spot import MSSPOT
 from datasets import PascalVOC, COCO2017, MOVi
 from ocl_metrics import UnsupervisedMaskIoUMetric, ARIMetric
@@ -23,7 +23,7 @@ from utils_spot import inv_normalize, cosine_scheduler, visualize, bool_flag, lo
 import models_vit
 
 # Set available devices here, do NOT use GPU 0 on node 20
-device_ids =[6]
+device_ids =[0]
 os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
 
@@ -70,7 +70,7 @@ def get_args_parser():
     parser.add_argument('--mlp_dec_hidden',  type=int, default=2048, help='Dimension of decoder mlp hidden layers')
     parser.add_argument('--use_slot_proj',  type=bool_flag, default=True, help='Use an extra projection before MLP decoder')
     
-    parser.add_argument('--which_encoder',  type=str, default='dino_vitb16', help='dino_vitb16, dino_vits8, dinov2_vitb14_reg, dinov2_vits14_reg, dinov2_vitb14, dinov2_vits14, mae_vitb16')
+    parser.add_argument('--which_encoder',  type=str, default='dino_vitb16', help='dino_vitb16, dino_vits8, dinov2_vitb14_reg, dinov2_vits14_reg, dinov2_vitb14, dinov2_vits14, mae_vitb16, BRAVE')
     parser.add_argument('--finetune_blocks_after',  type=int, default=100, help='finetune the blocks from this and after (counting from 0), for vit-b values greater than 12 means keep everything frozen')
     parser.add_argument('--encoder_final_norm',  type=bool_flag, default=False)
     parser.add_argument('--pretrained_encoder_weights', type=str, default=None)
@@ -85,7 +85,6 @@ def get_args_parser():
     parser.add_argument('--ms_which_encoder_layers', type=str, default="9,10,11", help= "Which block layers of the encoders are to be used for multi-scale slot attention, values as ints separated by commas with no whitespace")
     parser.add_argument('--concat_method', type=str, default='mean', help="how the multiscale attention is concatenated, choose from ['mean', 'sum']")
     parser.add_argument("--slot_initialization", type=str, default=None, help="initialization method for slots")
-    parser.add_argument('--shared_weights', type=bool, default=False, help='if the weights of the slot attention encoder module are shared')
     parser.add_argument('--data_cut', type=float, default=1, help='factor how much of the original length of the data is used')
     parser.add_argument('--log_folder_name', type=str, default=None, help='folder to save the logs and model')
     return parser
@@ -164,6 +163,10 @@ def train(args):
         encoder = models_vit.__dict__["vit_base_patch16"](num_classes=0, global_pool=False, drop_path_rate=0)
         assert args.pretrained_encoder_weights is not None
         load_pretrained_encoder(encoder, args.pretrained_encoder_weights, prefix=None) 
+    elif args.which_encoder == "brave" or args.which_encoder == "BRAVE":
+        # Use DINO as main encoder, also as reconstruction target, so keep this just like default DINO
+        args.max_tokens = int((args.val_image_size/16)**2)
+        encoder = BraveEncoder(args).cuda()
     else:
         raise
         
@@ -183,7 +186,8 @@ def train(args):
         print(entry)
 
     # Create model with hyper parameters
-    model = MSSPOT(encoder, args, encoder_second)
+    model_cls = BraveSPOT if args.which_encoder == "BRAVE" or args.which_encoder == "brave" else MSSPOT
+    model = model_cls(encoder, args, encoder_second)
     
     # register hooks for MSSPOT
     for name, module in model.named_modules():
@@ -267,7 +271,7 @@ def train(args):
     
         model.train()
     
-        for batch, image in enumerate(train_loader):
+        for batch, (image, image_paths) in enumerate(train_loader):
             
             image = image.cuda()
 
@@ -277,7 +281,7 @@ def train(args):
             lr_value = optimizer.param_groups[0]['lr']
             
             optimizer.zero_grad()
-            mse, _, _, _, _, _ = model(image)
+            mse, _, _, _, _, _ = model(image, image_paths)
             if make_graph:
                 print("Making graph")
                 make_dot(mse.mean(), params=dict(model.named_parameters())).render("msspotnodetach.png", format="png")
@@ -306,7 +310,7 @@ def train(args):
             val_mse = 0.
             counter = 0
     
-            for batch, (image, true_mask_i, true_mask_c, mask_ignore) in enumerate(tqdm(val_loader)):
+            for batch, (image, image_paths, true_mask_i, true_mask_c, mask_ignore) in enumerate(tqdm(val_loader)):
                 image = image.cuda()
                 true_mask_i = true_mask_i.cuda()
                 true_mask_c = true_mask_c.cuda()
@@ -315,7 +319,7 @@ def train(args):
                 batch_size = image.shape[0]
                 counter += batch_size
     
-                mse, default_slots_attns, dec_slots_attns, _, _, _ = model(image)
+                mse, default_slots_attns, dec_slots_attns, _, _, _ = model(image, image_paths)
     
                 # DINOSAUR uses as attention masks the attenton maps of the decoder
                 # over the slots, which bilinearly resizes to match the image resolution
