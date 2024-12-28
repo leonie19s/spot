@@ -166,6 +166,29 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
     """
         Mutli-Scale Slot Attention Encoder where no weights are shared, i.e. every scale has its own encoder
     """
+    def weighted_concat(self, slots_tensor, attn_tensor, init_slots, attn_logits, dim):
+        # compute W_l -> sum of all attention maps
+        W_j_sum = torch.sum(attn_tensor, dim=dim)
+      
+        
+        # initialize empty tensor for weighted slots
+        weighted_slot = torch.zeros_like(slots_tensor[0])
+        weighted_attn = torch.zeros_like(attn_tensor[0])
+        weighted_init_slots = torch.zeros_like(init_slots[0])
+        weighted_attn_logits = torch.zeros_like(attn_logits[0])
+        # iterate over all slots and attention maps
+        for l in range(slots_tensor.shape[0]):
+            W_l = attn_tensor[l]
+            S_l = slots_tensor[l]
+            # compute weighted slot
+            weighted_slot += S_l * (W_l / W_j_sum)
+            # compute weighted attention map
+            weighted_attn += W_l*(W_l / W_j_sum)
+            weighted_init_slots += init_slots[l]*(W_l / W_j_sum)
+            weighted_attn_logits += attn_logits[l]* (W_l / W_j_sum)
+        return weighted_slot, weighted_attn, weighted_init_slots, weighted_attn_logits
+
+
 
     def __init__(self, num_iterations, num_slots, input_channels, slot_size, mlp_hidden_size, pos_channels,
                   truncate='bi-level', init_method='embedding', ms_which_encoder_layers = [9, 10, 11], concat_method = "sum", slot_initialization=None, num_heads = 1, drop_path = 0.0):
@@ -188,11 +211,13 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
         elif concat_method == "None" or concat_method == None:
             # then we only want the last slot from the list
             self.agg_fct = lambda x, dim: x[-1]
+        elif concat_method == "weighted":
+            self.agg_fct = "weighted"
+            print("using weighted concat")
         elif concat_method != "sum":
             print(f"Provided aggregation function {concat_method} does not exist, defaulting to sum")
     
     def forward(self, x):
-
         # Lists for storing intermediate scale results
         slots_list = []
         attn_list = []
@@ -228,10 +253,14 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
             attn_logits_list.append(attn_logits)
     
         # Aggregation across scales
-        agg_slots = self.agg_fct(torch.stack(slots_list), dim=0)
-        agg_attn = self.agg_fct(torch.stack(attn_list), dim =0)
-        agg_init_slots = self.agg_fct(torch.stack(init_slots_list), dim=0)
-        agg_attn_logits = self.agg_fct(torch.stack(attn_logits_list), dim=0)
+        if self.agg_fct == "weighted":
+            raise NotImplementedError
+            # agg_slots, agg_attn, agg_init_slots, agg_attn_logits = self.weighted_concat(torch.stack(slots_list), torch.stack(attn_list), torch.stack(init_slots_list), torch.stack(attn_logits_list), dim=0)
+        else:
+            agg_slots = self.agg_fct(torch.stack(slots_list), dim=0)
+            agg_attn = self.agg_fct(torch.stack(attn_list), dim =0)
+            agg_init_slots = self.agg_fct(torch.stack(init_slots_list), dim=0)
+            agg_attn_logits = self.agg_fct(torch.stack(attn_logits_list), dim=0)
 
         return agg_slots, agg_attn, agg_init_slots, agg_attn_logits
 

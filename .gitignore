@@ -137,3 +137,6 @@ dmypy.json
 *.out
 *.dot
 *.txt
+
+
+local/
