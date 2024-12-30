@@ -413,7 +413,8 @@ def unsupervised_mask_iou(
     true_mask: torch.Tensor,
     matching: str = "hungarian",
     reduction: str = "mean",
-    iou_empty: float = 0.0,
+    iou_empty: float = 0.0, 
+    return_idx=False
 ) -> torch.Tensor:
     """Compute intersection-over-union (IoU) between masks with unknown class correspondences.
     This metric is also known as Jaccard index. Note that this is a non-batched implementation.
@@ -436,9 +437,10 @@ def unsupervised_mask_iou(
     assert pred_mask.ndim == 2
     assert true_mask.ndim == 2
     n_gt_classes = len(true_mask)
+ 
     pred_mask = pred_mask.unsqueeze(1).to(torch.bool)
     true_mask = true_mask.unsqueeze(0).to(torch.bool)
-
+    
     intersection = torch.sum(pred_mask & true_mask, dim=-1).to(torch.float64)
     union = torch.sum(pred_mask | true_mask, dim=-1).to(torch.float64)
     pairwise_iou = intersection / union
@@ -452,6 +454,8 @@ def unsupervised_mask_iou(
         )
         pred_idxs = torch.as_tensor(pred_idxs, dtype=torch.int64, device=pairwise_iou.device)
         true_idxs = torch.as_tensor(true_idxs, dtype=torch.int64, device=pairwise_iou.device)
+        if return_idx:
+            return pred_idxs, true_idxs
     elif matching == "best_overlap":
         non_empty_gt = torch.sum(true_mask.squeeze(0), dim=1) > 0
         pred_idxs = torch.argmax(pairwise_iou, dim=0)[non_empty_gt]

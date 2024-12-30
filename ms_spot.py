@@ -45,7 +45,7 @@ class MSSPOT(nn.Module):
         self.slot_attn = sae_class(
             args.num_iterations, args.num_slots,
             args.d_model, args.slot_size, args.mlp_hidden_size, args.pos_channels,
-            args.truncate, args.init_method, args.ms_which_encoder_layers, args.concat_method, args.slot_initialization)
+            args.truncate, args.init_method, args.ms_which_encoder_layers, args.concat_method, args.slot_initialization, args.val_mask_size)
 
         self.input_proj = nn.Sequential(
             linear(args.d_model, args.d_model, bias=False),
@@ -298,6 +298,8 @@ class MSSPOT(nn.Module):
 
         # Mean-Square-Error loss
         H_enc, W_enc = int(math.sqrt(emb_target.shape[1])), int(math.sqrt(emb_target.shape[1]))
+        if H_enc != 14 or W_enc != 14:
+            print("H enc and W enc has changed!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
         loss_mse = ((emb_target - dec_recon) ** 2).sum()/(B*H_enc*W_enc*self.d_model)
 
         # Reshape the slot and decoder-slot attentions.

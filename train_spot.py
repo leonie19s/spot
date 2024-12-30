@@ -23,7 +23,7 @@ from utils_spot import inv_normalize, cosine_scheduler, visualize, bool_flag, lo
 import models_vit
 
 # Set available devices here, do NOT use GPU 0 on node 20
-device_ids =[6]
+device_ids =[3]
 os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
 
@@ -316,16 +316,18 @@ def train(args):
                 counter += batch_size
     
                 mse, default_slots_attns, dec_slots_attns, _, _, _ = model(image)
-    
+          
                 # DINOSAUR uses as attention masks the attenton maps of the decoder
                 # over the slots, which bilinearly resizes to match the image resolution
                 # dec_slots_attns shape: [B, num_slots, H_enc, W_enc]
                 default_attns = F.interpolate(default_slots_attns, size=args.val_mask_size, mode='bilinear')
+                
                 dec_attns = F.interpolate(dec_slots_attns, size=args.val_mask_size, mode='bilinear')
                 # dec_attns shape [B, num_slots, H, W]
                 default_attns = default_attns.unsqueeze(2)
+          
                 dec_attns = dec_attns.unsqueeze(2) # shape [B, num_slots, 1, H, W]
-    
+                
                 pred_default_mask = default_attns.argmax(1).squeeze(1)
                 pred_dec_mask = dec_attns.argmax(1).squeeze(1)
     

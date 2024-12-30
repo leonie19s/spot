@@ -5,7 +5,7 @@ https://github.com/YuLiu-LY/BO-QSA/blob/main/models/slot_attn.py
 
 from utils_spot import *
 from timm.models.layers import DropPath
-
+from ocl_metrics import unsupervised_mask_iou
 class SlotAttention(nn.Module):
     def __init__(
         self,
@@ -167,6 +167,8 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
         Mutli-Scale Slot Attention Encoder where no weights are shared, i.e. every scale has its own encoder
     """
     def weighted_concat(self, slots_tensor, attn_tensor, init_slots, attn_logits, dim):
+        # TODO: implement this ? maybe
+
         # compute W_l -> sum of all attention maps
         W_j_sum = torch.sum(attn_tensor, dim=dim)
       
@@ -191,7 +193,7 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
 
 
     def __init__(self, num_iterations, num_slots, input_channels, slot_size, mlp_hidden_size, pos_channels,
-                  truncate='bi-level', init_method='embedding', ms_which_encoder_layers = [9, 10, 11], concat_method = "sum", slot_initialization=None, num_heads = 1, drop_path = 0.0):
+                  truncate='bi-level', init_method='embedding', ms_which_encoder_layers = [9, 10, 11], concat_method = "sum", slot_initialization=None, val_mask_size=320, num_heads = 1, drop_path = 0.0):
         super().__init__()
         
         self.ms_which_encoder_layers = ms_which_encoder_layers
@@ -202,6 +204,7 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
             ) for i in range(len(ms_which_encoder_layers))
         ])
         self.slot_initialization = slot_initialization
+        self.val_mask_size = val_mask_size
         # Set aggregation function according to provided args, default to mean
         self.agg_fct = torch.sum
         if concat_method == "mean":
@@ -212,11 +215,102 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
             # then we only want the last slot from the list
             self.agg_fct = lambda x, dim: x[-1]
         elif concat_method == "weighted":
-            self.agg_fct = "weighted"
-            print("using weighted concat")
+            #self.agg_fct = "weighted"
+            #print("using weighted concat")
+            raise NotImplementedError
         elif concat_method != "sum":
             print(f"Provided aggregation function {concat_method} does not exist, defaulting to sum")
-    
+
+    def align_slots(self, slots_list, attn_list, init_slots_list, attn_logits_list):
+        """
+        Based on the list of attention maps tensors, we use hungarian matching to ensure they correspond across scales
+        and if not, align them and the slots accordingly IN PLACE.
+
+        params:
+            shape of slots list: torch.Size([B, 6, 256]), n_scales
+            shape of attn list: torch.Size([B, 196, 6]), n_scales
+            shape of init slots list: torch.Size([B, 6, 256]), n_scales
+            shape of attn logits list: torch.Size([B, 1, 196, 6]), n_scales
+
+        """
+        def preprocess_input(input):
+            """
+            expected initial shape: [B ,196,6]
+            """
+            # split the 196 back into 14x14 (H_enc, W_enc)
+            input = input.transpose(-1,-2).reshape(input.shape[0], input.shape[2], 14, 14) # shape now [64, 6, 14, 14]
+            # upsample to 320x320
+            input = F.interpolate(input, size=self.val_mask_size, mode='bilinear') # shape now [64, 6, 320, 320]
+            # argmax and squeeze to get slot IDs
+            input = input.unsqueeze(2).argmax(1).squeeze(1) # shape now [64, 320, 320], contains slot IDs
+            # one hot encode
+            input = torch.nn.functional.one_hot(input).to(torch.float32).permute(0,3,1,2) # shape now [64, 6, 320, 320]
+            # flatten the last two dimensions
+            input = input.flatten(-2, -1) # shape now [64, 6, 320*320]
+            # argmax to get the slot ID -> TODO: is this necessary?
+            indices = torch.argmax(input, dim=1)
+            input = torch.nn.functional.one_hot(indices,num_classes=input.shape[1])
+            #input = input.transpose(1,2)# shape now [64, 320*320, 6]
+            if input.shape[1] != 320*320  or input.shape[2] != 6:
+                print(input.shape)
+                raise ValueError("Preprocessing of input did not work as expected")
+            return input
+        
+        def hungarian_matching(input1, input2):
+            """
+            expected input size [B, 320*320, 6]
+            performs hungarian matching on the inputs and returns the list of matched indices
+            """
+            batch_size, num_pixels, num_slots = input1.shape
+            batch_indices = []
+            # Iterate over the batch
+            for i in range(batch_size):
+                mask1 = input1[i].reshape(num_slots, num_pixels)  # Shape: [6, 320*320]
+                mask2 = input2[i].reshape(num_slots, num_pixels)  # Shape: [6, 320*320]
+                # reuse function from ocl_metrics
+                mask1_idx, mask2_idx = unsupervised_mask_iou(mask1,mask2,"hungarian", None,0.0, True)
+                batch_indices.append((mask1_idx, mask2_idx))
+            return batch_indices
+        
+        
+        for i in range(len(attn_list)-1):
+            # in each iteration, we want to order the slots + attention maps at index i+1 
+            # based on the slots/attention maps at index i
+            
+            # preprocess input
+            previous_mask = preprocess_input(attn_list[i]) # shape [64, 320*320, 6]
+            current_mask = preprocess_input(attn_list[i+1]) # shape [64, 320*320, 6]
+
+            # placeholders for ordered slots and attention maps
+            slots_ordered = torch.zeros_like(slots_list[i+1]) # shape [64, 6, 256]
+            attn_ordered = torch.zeros_like(attn_list[i+1]) # shape [64, 196, 6]
+            init_slots_ordered = torch.zeros_like(init_slots_list[i+1]) # shape [64, 6, 256]
+            attn_logits_ordered = torch.zeros_like(attn_logits_list[i+1])  # shape [64, 1, 196, 6]
+
+            # perform hungarian matching
+            batch_indices = hungarian_matching(previous_mask, current_mask)
+            
+            # get correct order for the second input for each batch
+            current_idx = [indices[1] for indices in batch_indices]  
+            
+            # iterate over the batch
+            for j, curr_idx in enumerate(current_idx):
+                # align in the respective slot dimension
+                slots_ordered[j] = slots_list[i+1][j, curr_idx, :]
+                attn_ordered[j] = attn_list[i+1][j, :, curr_idx]
+                init_slots_ordered[j] = init_slots_list[i+1][j, curr_idx, :]
+                attn_logits_ordered[j] = attn_logits_list[i+1][j, :, :, curr_idx]
+
+            # replace the original slots and attention maps with the ordered ones
+            slots_list[i+1] = slots_ordered
+            attn_list[i+1] = attn_ordered
+            init_slots_list[i+1] = init_slots_ordered
+            attn_logits_list[i+1] = attn_logits_ordered
+            
+            # TODO: implement plotting for ordering 
+            #self.plot_ordering(previous_mask, current_mask, attn_ordered)
+        return slots_list, attn_list, init_slots_list, attn_logits_list   
+     
     def forward(self, x):
         # Lists for storing intermediate scale results
         slots_list = []
@@ -251,7 +345,8 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
             attn_list.append(attn)
             init_slots_list.append(init_slots)
             attn_logits_list.append(attn_logits)
-    
+        # ensure slots correspond across scales
+        slots_list, attn_list, init_slots_list, attn_logits_list = self.align_slots(slots_list, attn_list, init_slots_list, attn_logits_list)
         # Aggregation across scales
         if self.agg_fct == "weighted":
             raise NotImplementedError
