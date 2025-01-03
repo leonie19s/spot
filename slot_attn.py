@@ -6,6 +6,10 @@ https://github.com/YuLiu-LY/BO-QSA/blob/main/models/slot_attn.py
 from utils_spot import *
 from timm.models.layers import DropPath
 from ocl_metrics import unsupervised_mask_iou
+import matplotlib.pyplot as plt
+from matplotlib import cm
+
+DO_PLOT_ORDERING = False
 class SlotAttention(nn.Module):
     def __init__(
         self,
@@ -195,7 +199,7 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
     def __init__(self, num_iterations, num_slots, input_channels, slot_size, mlp_hidden_size, pos_channels,
                   truncate='bi-level', init_method='embedding', ms_which_encoder_layers = [9, 10, 11], concat_method = "sum", slot_initialization=None, val_mask_size=320, num_heads = 1, drop_path = 0.0):
         super().__init__()
-        
+        self.counter = 0
         self.ms_which_encoder_layers = ms_which_encoder_layers
         self.slot_attention_encoders = nn.ModuleList([
             SlotAttentionEncoder(
@@ -233,44 +237,108 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
             shape of attn logits list: torch.Size([B, 1, 196, 6]), n_scales
 
         """
-        def preprocess_input(input):
-            """
-            expected initial shape: [B ,196,6]
-            """
-            # split the 196 back into 14x14 (H_enc, W_enc)
-            input = input.transpose(-1,-2).reshape(input.shape[0], input.shape[2], 14, 14) # shape now [64, 6, 14, 14]
-            # upsample to 320x320
-            input = F.interpolate(input, size=self.val_mask_size, mode='bilinear') # shape now [64, 6, 320, 320]
-            # argmax and squeeze to get slot IDs
-            input = input.unsqueeze(2).argmax(1).squeeze(1) # shape now [64, 320, 320], contains slot IDs
-            # one hot encode
-            input = torch.nn.functional.one_hot(input).to(torch.float32).permute(0,3,1,2) # shape now [64, 6, 320, 320]
-            # flatten the last two dimensions
-            input = input.flatten(-2, -1) # shape now [64, 6, 320*320]
-            # argmax to get the slot ID -> TODO: is this necessary?
-            indices = torch.argmax(input, dim=1)
-            input = torch.nn.functional.one_hot(indices,num_classes=input.shape[1])
-            #input = input.transpose(1,2)# shape now [64, 320*320, 6]
-            if input.shape[1] != 320*320  or input.shape[2] != 6:
-                print(input.shape)
-                raise ValueError("Preprocessing of input did not work as expected")
-            return input
+        # if there is only one scale, we do not need to align anything
+        if len(slots_list) < 2:
+            return slots_list, attn_list, init_slots_list, attn_logits_list
         
-        def hungarian_matching(input1, input2):
+        def preprocess_attn_mask_batch(input: torch.tensor):
             """
-            expected input size [B, 320*320, 6]
+            expected initial shape: [B, H*W, C]
+            B = batch size
+            H*W = mask size [VOC PASCAL DINOSAUR -> 196]
+            C = number of slots [VOC PASCAL DINOSAUR -> 6]
+            output shape: [B, C, H*W]
+            """
+            height, width = np.sqrt(input.shape[1]), np.sqrt(input.shape[1])
+            # check if height has no decimals
+            if not height.is_integer():
+                raise ValueError("Height/width of input is not a square number")
+            height = int(height)
+            width = int(width)
+
+            input_transposed = input.transpose(-1,-2).reshape(input.shape[0], input.shape[2], height, width) # shape now [B, C, H, W]
+            # argmax and squeeze to get slot IDs
+            input_slot_id = input_transposed.unsqueeze(2).argmax(1).squeeze(1) # shape now [B, H, W], contains slot IDs
+            # one hot encode
+            input_one_hot = torch.nn.functional.one_hot(input_slot_id, num_classes=input.shape[2]).to(torch.float32).permute(0,3,1,2) # shape now [B, C, H, W]
+            input_one_hot_flattened = input_one_hot.reshape(input_one_hot.shape[0], input_one_hot.shape[1], -1)
+            
+            if input_one_hot_flattened.shape[1] != input.shape[2] or input_one_hot_flattened.shape[2] != input.shape[1]:
+                print(f"original input shape: {input.shape}, transposed: {input_transposed.shape}, slot_id: {input_slot_id.shape}, one_hot: {input_one_hot.shape}, one_hot_flattened: {input_one_hot_flattened.shape}")
+                raise ValueError("Preprocessing of input did not work as expected")
+            return input_one_hot_flattened
+        
+        def plot_ordering(previous_attn, current_attn, current_attn_ordered, batch_index, upsample_size, plotidx):
+            """
+            expected attn shape [B, 196, 6]). Creates a threefold plot for the ordering of the attention maps, 
+            where the first plot shows the previous attention map, the second the current attention map and 
+            the third the ordered current attention map by colorcoding the six slots
+            """
+            previous_attn = previous_attn[batch_index]
+            current_attn = current_attn[batch_index]
+            current_attn_ordered = current_attn_ordered[batch_index]
+         
+            previous_attn = previous_attn.clone().detach().cpu().numpy()
+            current_attn = current_attn.clone().detach().cpu().numpy()
+            current_attn_ordered = current_attn_ordered.clone().detach().cpu().numpy()
+            
+            # reshape 102400 to 320x320
+            previous_attn = previous_attn.reshape(upsample_size, upsample_size, 6)
+            current_attn = current_attn.reshape(upsample_size, upsample_size, 6)
+            current_attn_ordered = current_attn_ordered.reshape(upsample_size, upsample_size, 6)
+
+            # instead of one hot encoding, transform into slot ids
+            current_attn = np.argmax(current_attn, axis=-1)
+            current_attn_ordered = np.argmax(current_attn_ordered, axis=-1)
+            previous_attn = np.argmax(previous_attn, axis=-1)
+
+            #check if current attn is different from current attn ordered
+            if np.all(current_attn == current_attn_ordered):
+                print("Attention maps are the same after ordering")
+                return
+
+            # Reshape to get the slot IDs for each pixel, by finding the index of the maximum value (one-hot encoded)
+            #slot_ids_prev = np.argmax(previous_attn, axis=-1)  # This will give us an array of shape (102400,)
+            #slot_ids_current = np.argmax(current_attn, axis=-1)  # This will give us an array of shape (102400,)
+            #slot_ids_current_ordered = np.argmax(current_attn_ordered, axis=-1)  # This will give us an array of shape (102400,)
+            # Reshape the result back to 320x320 to match the original image shape
+           # slot_ids_image_prev = slot_ids_prev.reshape(320, 320)
+            #slot_ids_image_current = slot_ids_current.reshape(320, 320)
+            #slot_ids_image_current_ordered = slot_ids_current_ordered.reshape(320, 320)
+            cmap = cm.get_cmap('tab20', 6) 
+            fig, axs = plt.subplots(1, 3, figsize=(15, 5))
+            # Plot previous attention map
+            print(np.unique(previous_attn), np.unique(current_attn), np.unique(current_attn_ordered))
+            im0 = axs[0].imshow(previous_attn, cmap=cmap, interpolation='nearest')
+            axs[0].set_title("Previous Attention Map")
+            axs[0].axis('off')  # Remove axis ticks
+            
+            # Plot current attention map
+            im1 = axs[1].imshow(current_attn, cmap=cmap, interpolation='nearest')
+            axs[1].set_title("Current Attention Map")
+            axs[1].axis('off')  # Remove axis ticks
+            
+            # Plot ordered current attention map
+            im2 = axs[2].imshow(current_attn_ordered, cmap=cmap, interpolation='nearest')
+            axs[2].set_title("Ordered Current Attention Map")
+            axs[2].axis('off')  # Remove axis ticks
+            
+            # Add a colorbar (legend) that maps color to slot number
+            fig.colorbar(im2, ax=axs, orientation='horizontal', fraction=0.02, pad=0.04, ticks=np.arange(6))
+
+
+            # Save the plot as an image file
+            plt.savefig(f'/visinf/home/vilab01/spot/plots/slot_ordering_{plotidx}.png')  # You can change the file name and extension (e.g., .jpg, .png)
+            plt.close()  # Close the plot to avoid displaying it
+
+        def hungarian_matching(attn_masks_1: torch.tensor, attn_masks_2: torch.tensor):
+            """
+            expected input size [B, C, H*W]
             performs hungarian matching on the inputs and returns the list of matched indices
             """
-            batch_size, num_pixels, num_slots = input1.shape
-            batch_indices = []
-            # Iterate over the batch
-            for i in range(batch_size):
-                mask1 = input1[i].reshape(num_slots, num_pixels)  # Shape: [6, 320*320]
-                mask2 = input2[i].reshape(num_slots, num_pixels)  # Shape: [6, 320*320]
-                # reuse function from ocl_metrics
-                mask1_idx, mask2_idx = unsupervised_mask_iou(mask1,mask2,"hungarian", None,0.0, True)
-                batch_indices.append((mask1_idx, mask2_idx))
-            return batch_indices
+            batch_size = attn_masks_1.shape[0]        
+            slot_orderings = [unsupervised_mask_iou(attn_masks_1[i], attn_masks_2[i], "hungarian", None, 0.0, True) for i in range(batch_size)]
+            return slot_orderings
         
         
         for i in range(len(attn_list)-1):
@@ -278,37 +346,47 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
             # based on the slots/attention maps at index i
             
             # preprocess input
-            previous_mask = preprocess_input(attn_list[i]) # shape [64, 320*320, 6]
-            current_mask = preprocess_input(attn_list[i+1]) # shape [64, 320*320, 6]
+            attn_masks_previous_scale = preprocess_attn_mask_batch(attn_list[i]) # shape [64, 196, 6]
+            attn_masks_this_scale = preprocess_attn_mask_batch(attn_list[i+1]) # shape [64, 196, 6]
+            
+            attn_previous_scale_copy = attn_masks_previous_scale.clone()
+            attn_this_scale_copy = attn_masks_this_scale.clone()
 
-            # placeholders for ordered slots and attention maps
+            # placeholders for ordered slots and attention maps etc
             slots_ordered = torch.zeros_like(slots_list[i+1]) # shape [64, 6, 256]
             attn_ordered = torch.zeros_like(attn_list[i+1]) # shape [64, 196, 6]
             init_slots_ordered = torch.zeros_like(init_slots_list[i+1]) # shape [64, 6, 256]
             attn_logits_ordered = torch.zeros_like(attn_logits_list[i+1])  # shape [64, 1, 196, 6]
 
             # perform hungarian matching
-            batch_indices = hungarian_matching(previous_mask, current_mask)
+            slot_orderings_list_over_batch = hungarian_matching(attn_masks_previous_scale, attn_masks_this_scale)
             
             # get correct order for the second input for each batch
-            current_idx = [indices[1] for indices in batch_indices]  
-            
-            # iterate over the batch
-            for j, curr_idx in enumerate(current_idx):
+            slot_orderings_list_this_scale = [order[1] for order in slot_orderings_list_over_batch]  
+           
+            for b, slot_order in enumerate(slot_orderings_list_this_scale):
                 # align in the respective slot dimension
-                slots_ordered[j] = slots_list[i+1][j, curr_idx, :]
-                attn_ordered[j] = attn_list[i+1][j, :, curr_idx]
-                init_slots_ordered[j] = init_slots_list[i+1][j, curr_idx, :]
-                attn_logits_ordered[j] = attn_logits_list[i+1][j, :, :, curr_idx]
+                slots_ordered[b] = slots_list[i+1][b, slot_order, :]
+                attn_ordered[b] = attn_list[i+1][b, :, slot_order]
+                init_slots_ordered[b] = init_slots_list[i+1][b, slot_order, :]
+                attn_logits_ordered[b] = attn_logits_list[i+1][b, :, :, slot_order]
 
             # replace the original slots and attention maps with the ordered ones
             slots_list[i+1] = slots_ordered
             attn_list[i+1] = attn_ordered
             init_slots_list[i+1] = init_slots_ordered
             attn_logits_list[i+1] = attn_logits_ordered
-            
-            # TODO: implement plotting for ordering 
-            #self.plot_ordering(previous_mask, current_mask, attn_ordered)
+           
+            if DO_PLOT_ORDERING:
+                 # plot if attn_ordered is different 
+                 
+                if not torch.all(attn_this_scale_copy == ordered_attn_mask_batch):
+                    ordered_attn_mask_batch = preprocess_attn_mask_batch(attn_list[i+1])
+                    for batch_index in range(attn_this_scale_copy.shape[0]):
+                        if not torch.all(attn_this_scale_copy[batch_index] == ordered_attn_mask_batch[batch_index]):
+                            plot_ordering(attn_previous_scale_copy, attn_this_scale_copy, ordered_attn_mask_batch, batch_index, self.val_mask_size, self.counter)
+                            self.counter += 1
+                            break   
         return slots_list, attn_list, init_slots_list, attn_logits_list   
      
     def forward(self, x):
