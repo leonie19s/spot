@@ -23,7 +23,7 @@ IGNORE_INDEX = -100
 
 
 # Set available devices here, do NOT use GPU 0 on node 20
-device_ids =[2]
+device_ids =[1]
 os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
 
@@ -77,7 +77,7 @@ def get_args_parser():
     parser.add_argument('--pretrained_encoder_weights', type=str, default=None)
     
     parser.add_argument('--truncate',  type=str, default='bi-level', help='bi-level or fixed-point or none')
-    parser.add_argument('--init_method', default='embedding', help='embedding or shared_gaussian')
+    parser.add_argument('--init_method', default='shared_gaussian', help='embedding or shared_gaussian')
     
     parser.add_argument('--train_permutations',  type=str, default='random', help='which permutation')
     parser.add_argument('--eval_permutations',  type=str, default='standard', help='which permutation')
@@ -97,6 +97,7 @@ def get_args_parser():
     parser.add_argument("--slot_initialization", type=str, default=None, help="initialization method for slots")
     parser.add_argument('--shared_weights', type=bool, default=False, help='if the weights of the slot attention encoder module are shared')
     parser.add_argument('--data_cut', type=float, default=1, help='factor how much of the original length of the data is used')
+    parser.add_argument('--log_folder_name', type=str, default=None, help='folder to save the logs and model')
     
     return parser
 
@@ -130,7 +131,7 @@ def train(args):
         print(f"Dataset size is reduced using factor {args.data_cut}")
         train_dataset = reduce_dataset(train_dataset, args.data_cut)
         val_dataset = reduce_dataset(val_dataset, args.data_cut)
-        # args.lr_warmup_steps = args.lr_warmup_steps * args.data_cut
+        args.lr_warmup_steps = args.lr_warmup_steps * args.data_cut
 
     train_sampler = None
     val_sampler = None
@@ -203,11 +204,11 @@ def train(args):
 
     checkpoint = torch.load(args.teacher_checkpoint_path, map_location='cpu')
     checkpoint['model'] = {k.replace("tf_dec.", "dec."): v for k, v in checkpoint['model'].items()} # compatibility with older runs
-    teacher_model.load_state_dict(checkpoint['model'], strict=False)# todo change back
-    #msg = teacher_model.load_state_dict(checkpoint['model'], strict=True)
+    teacher_model.load_state_dict(checkpoint['model'], strict=True)
+    msg = teacher_model.load_state_dict(checkpoint['model'], strict=True)
     for param in teacher_model.parameters():
         param.requires_grad = False  # not update by gradient
-    #print(msg)
+    print(msg)
 
     if os.path.isfile(args.checkpoint_path):
         checkpoint = torch.load(args.checkpoint_path, map_location='cpu')
