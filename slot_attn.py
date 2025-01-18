@@ -165,7 +165,95 @@ class SlotAttentionEncoder(nn.Module):
         
         return slots_init
 
-      
+
+class DenseConnector(nn.Module):
+    """
+        Implements fusion of slots from multiple layers of the vision encoder through DenseConnector, as described by
+
+        https://openreview.net/pdf?id=Ioabr42B44
+
+        Here, slots are concatenated either along the patch (1) or feature (2+3) dimension and fed through a projection
+        layer to obtain a fused slot representation with the same shape as a slot tensor of an individual SA module. The
+        dense channel integration additionally concats pair-wise sums of slots prior to projection. For now, only channel
+        integration was implemented here.
+
+        To align the slot attention maps (and therefore init_slots and logits), we calculate the individual contribution
+        of every slot of every layer to the final fused slot through cosine similarity, and weigh the attention maps by
+        its individual components per slot by this weight.
+
+        EXAMPLE: For three layers of SA with slots x1, x2, x3[B, 6, 256] and attention maps [B, 196, 6]:
+
+        (1) Sparse token integration - Concat(x1, x2, x3, dim=-2) [B, 18, 256], Projection -> [B, 6, 256]
+        (2) Sparse channel integration - Concat(x1, x2, x3, dim=-1) [B, 6, 256 * 3], Projection -> [B, 6, 256]
+        (3) Dense channel integration - Concat(x1, x2, x3, (x1 + x2), (x2 + x3), dim=-1) [B, 6, 256 * 5], Projection -> [B, 6, 256]
+    """
+
+    def __init__(self, slot_dim, num_slots, num_layers, dense=False):
+        super().__init__()
+
+        # Store parameters
+        self.num_layers = num_layers
+        self.dense = dense
+        print("Using dense connector")
+
+        # MLP for channel integration
+        if dense:
+            self.mlp = nn.Sequential(
+                nn.Linear(slot_dim * (2 * num_layers - 1), 512),
+                nn.ReLU(),
+                nn.Linear(512, slot_dim)
+            )
+        else:
+            self.mlp = nn.Sequential(
+                nn.Linear(slot_dim * num_layers, 512),
+                nn.ReLU(),
+                nn.Linear(512, slot_dim)
+            )
+
+    def forward(self, slot_list, slot_att_list, init_slot_list, attn_logits_list):
+        """
+            slot_list: List of slots [B, num_slots, slot_dim], e.g. VOC [64, 6, 256] with len = num_layers
+            slot_att_list: List of slot attention maps [B, H_emb * W_emb, num_slots], e.g. VOC [64, 196, 6] with len = num_layers
+            init_slot_list: List of slot initializations [B, num_slots, slot_dim] with len = num_layers
+            attn_logits_list: List of attention logits [B, 1, H_emb * W_emb, num_slots]) with len = num_layers
+        """
+        
+        # Add [x_i + x_(i+1)] to concat list if we have dense integration, also add the attention maps pair-wise
+        if self.dense:
+            for i in range(self.num_layers - 1):
+                slot_list.append(slot_list[i] + slot_list[i + 1])
+                slot_att_list.append(slot_att_list[i] + slot_att_list[i + 1])
+
+        # Concat along feature dimension to [B, num_slots, slot_dim * num_layers (+ num_layers - 1 if dense)]
+        concat = torch.concat(slot_list, dim=-1)
+
+        # Project concat down to original shape [B, num_slots, slot_dim]
+        fused_slots = self.mlp(concat)
+
+        # Compute contribution of each individual slot of each layer to the fused slots through cosine similarity along feature dimension
+        weights = torch.stack([F.cosine_similarity(fused_slots, slot, dim=-1) for slot in slot_list], dim=-1)  # Shape: [B, num_slots, num_layers]
+        
+        # Normalize contributions
+        weights = F.softmax(weights, dim=-1)
+
+        # Fuse the attention maps based on the individual contributions
+        fused_attn = torch.zeros_like(slot_att_list[0]) # [B, H_emb * W_emb, num_slots]
+        for l_idx, attn in enumerate(slot_att_list):
+            fused_attn += weights[:, :, l_idx].unsqueeze(1) * attn
+
+        # Fuse init slots through contributions as well
+        fused_inits = torch.zeros_like(slot_list[0]) # [B, num_slots, slot_dim]
+        for l_idx, init_slots in enumerate(init_slot_list):
+            fused_inits += weights[:, :, l_idx].unsqueeze(2) * init_slots
+
+        # Fuse slot logits through contributions as well
+        fused_logits = torch.zeros_like(attn_logits_list[0]) # [B, 1, H_emb * W_emb, num_slots]
+        for l_idx, attn_logits in enumerate(attn_logits_list):
+            fused_logits += weights[:, :, l_idx].unsqueeze(1).unsqueeze(1) * attn_logits
+
+        return fused_slots, fused_attn, fused_inits, fused_logits 
+
+
 class MultiScaleSlotAttentionEncoder(nn.Module):
     """
         Mutli-Scale Slot Attention Encoder where no weights are shared, i.e. every scale has its own encoder
@@ -209,6 +297,7 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
         ])
         self.slot_initialization = slot_initialization
         self.val_mask_size = val_mask_size
+        self.concat_method_str = concat_method
         # Set aggregation function according to provided args, default to mean
         self.agg_fct = torch.sum
         if concat_method == "mean":
@@ -222,6 +311,8 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
             #self.agg_fct = "weighted"
             #print("using weighted concat")
             raise NotImplementedError
+        elif concat_method == "denseconnector":
+            self.agg_fct = DenseConnector(slot_size, num_slots, len(ms_which_encoder_layers))
         elif concat_method != "sum":
             print(f"Provided aggregation function {concat_method} does not exist, defaulting to sum")
 
@@ -423,12 +514,17 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
             attn_list.append(attn)
             init_slots_list.append(init_slots)
             attn_logits_list.append(attn_logits)
-        # ensure slots correspond across scales
-        slots_list, attn_list, init_slots_list, attn_logits_list = self.align_slots(slots_list, attn_list, init_slots_list, attn_logits_list)
+
+        # ensure slots correspond across scales, but only if hierarchical is not used
+        if self.slot_initialization != "hierarchical":
+            slots_list, attn_list, init_slots_list, attn_logits_list = self.align_slots(slots_list, attn_list, init_slots_list, attn_logits_list)
+        
         # Aggregation across scales
-        if self.agg_fct == "weighted":
+        if self.concat_method_str == "weighted":
             raise NotImplementedError
             # agg_slots, agg_attn, agg_init_slots, agg_attn_logits = self.weighted_concat(torch.stack(slots_list), torch.stack(attn_list), torch.stack(init_slots_list), torch.stack(attn_logits_list), dim=0)
+        elif self.concat_method_str == "denseconnector":
+            agg_slots, agg_attn, agg_init_slots, agg_attn_logits = self.agg_fct(slots_list, attn_list, init_slots_list, attn_logits_list)
         else:
             agg_slots = self.agg_fct(torch.stack(slots_list), dim=0)
             agg_attn = self.agg_fct(torch.stack(attn_list), dim =0)
