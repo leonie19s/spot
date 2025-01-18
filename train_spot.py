@@ -23,7 +23,7 @@ from utils_spot import inv_normalize, cosine_scheduler, visualize, bool_flag, lo
 import models_vit
 
 # Set available devices here, do NOT use GPU 0 on node 20
-device_ids =[2]
+device_ids =[1]
 os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
 
@@ -183,6 +183,8 @@ def train(args):
         print(entry)
 
     # Create model with hyper parameters
+    #model = SPOT(encoder, args, encoder_second)
+
     model = MSSPOT(encoder, args, encoder_second)
     
     # register hooks for MSSPOT
@@ -394,7 +396,7 @@ def train(args):
                 best_miou_slot = miou_slot
                 best_epoch = epoch + 1
     
-                torch.save(model.state_dict(), os.path.join(log_dir, 'best_model.pt'))
+                #torch.save(model.state_dict(), os.path.join(log_dir, 'best_model.pt'))
                 
             if epoch%visualize_per_epoch==0 or epoch==args.epochs-1:
                 image = inv_normalize(image)
@@ -425,7 +427,7 @@ def train(args):
                 'optimizer': optimizer.state_dict()
             }
     
-            torch.save(checkpoint, os.path.join(log_dir, 'checkpoint.pt.tar'))
+            #torch.save(checkpoint, os.path.join(log_dir, 'checkpoint.pt.tar'))
     
             print('====> Best Loss = {:F} @ Epoch {}'.format(best_val_loss, best_epoch))
     

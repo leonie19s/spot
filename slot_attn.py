@@ -8,8 +8,9 @@ from timm.models.layers import DropPath
 from ocl_metrics import unsupervised_mask_iou
 import matplotlib.pyplot as plt
 from matplotlib import cm
-
+from utils_spot import visualize_layer_attn
 DO_PLOT_ORDERING = False
+LAYER_ATTN_VIS = False
 class SlotAttention(nn.Module):
     def __init__(
         self,
@@ -170,6 +171,34 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
     """
         Mutli-Scale Slot Attention Encoder where no weights are shared, i.e. every scale has its own encoder
     """
+    def normalized_weighting(self, slots_tensor_list, attn_tensor_list, init_slots_list, attn_logits_list):
+        """ 
+            shape of slots list: [torch.Size([b, k, f])] *  s
+            shape of attn list: [torch.Size([b, l, k])] * s
+            shape of init slots list: [torch.Size([b, k, f])]* s
+            shape of attn logits list: [torch.Size([b, i, l, k])]* s (i=1)
+        """
+       
+        sum_attention_masks = torch.sum(torch.stack(attn_tensor_list, dim=0), dim=0)  # torch.Size([64, 196, 6])
+        scale_contributions = [torch.sum(mask, dim=1, keepdim=True) for mask in attn_tensor_list]  # torch.Size([64, 1, 6]) x 4
+        scale_weights = [contribution / torch.sum(sum_attention_masks, dim=1, keepdim=True) for contribution in scale_contributions] # torch.Size([64, 1, 6])
+
+        combined_slots = torch.stack(slots_tensor_list, dim=0)  # torch.Size([4, 64, 6, 256])
+        scale_weights_slots = torch.stack(scale_weights, dim=0).squeeze(2)  # torch.Size([4, 64, 6])
+        fused_slots = torch.einsum('sbk,sbkf->bkf', scale_weights_slots, combined_slots)
+
+        combined_attention_masks = torch.stack(attn_tensor_list, dim=0)  # torch.Size([4, 64, 196, 6]) sblk
+        scale_weights_masks = torch.stack(scale_weights, dim=0)  # torch.Size([4, 64, 1, 6]) sbik
+        fused_attention_masks = torch.einsum('sblk,sbik->bik', scale_weights_masks, combined_attention_masks)  # [B, N, K]
+        
+        combined_init_slots = torch.stack(init_slots_list, dim=0)  # torch.Size([4, 64, 6, 256]) sbkf
+        fused_init_slots = torch.einsum('sbk,sbkf->bkf', scale_weights_slots, combined_init_slots)  #torch.Size([64, 6, 256])
+        
+        combined_attn_logits = torch.stack(attn_logits_list, dim=0)  # torch.Size([4, 64, 1, 196, 6]) sbilk
+        fused_attn_logits = torch.einsum('sbik,sbilk->bilk', scale_weights_masks, combined_attn_logits)  # torch.Size([64, 1, 196, 6])
+
+        return fused_slots, fused_attention_masks, fused_init_slots, fused_attn_logits    
+    
     def weighted_concat(self, slots_tensor, attn_tensor, init_slots, attn_logits, dim):
         # TODO: implement this ? maybe
 
@@ -199,7 +228,7 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
     def __init__(self, num_iterations, num_slots, input_channels, slot_size, mlp_hidden_size, pos_channels,
                   truncate='bi-level', init_method='embedding', ms_which_encoder_layers = [9, 10, 11], concat_method = "sum", slot_initialization=None, val_mask_size=320, num_heads = 1, drop_path = 0.0):
         super().__init__()
-        self.counter = 0
+        self.it_counter = 0
         self.ms_which_encoder_layers = ms_which_encoder_layers
         self.slot_attention_encoders = nn.ModuleList([
             SlotAttentionEncoder(
@@ -218,10 +247,10 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
         elif concat_method == "None" or concat_method == None:
             # then we only want the last slot from the list
             self.agg_fct = lambda x, dim: x[-1]
-        elif concat_method == "weighted":
-            #self.agg_fct = "weighted"
+        elif concat_method == "norm_weight":
+            self.agg_fct = "norm_weight"
             #print("using weighted concat")
-            raise NotImplementedError
+            
         elif concat_method != "sum":
             print(f"Provided aggregation function {concat_method} does not exist, defaulting to sum")
 
@@ -268,7 +297,7 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
                 raise ValueError("Preprocessing of input did not work as expected")
             return input_one_hot_flattened
         
-        def plot_ordering(previous_attn, current_attn, current_attn_ordered, batch_index, upsample_size, plotidx):
+        def plot_ordering(previous_attn, current_attn, current_attn_ordered, batch_index, upsample_size, iteration):
             """
             expected attn shape [B, 196, 6]). Creates a threefold plot for the ordering of the attention maps, 
             where the first plot shows the previous attention map, the second the current attention map and 
@@ -296,15 +325,6 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
             if np.all(current_attn == current_attn_ordered):
                 print("Attention maps are the same after ordering")
                 return
-
-            # Reshape to get the slot IDs for each pixel, by finding the index of the maximum value (one-hot encoded)
-            #slot_ids_prev = np.argmax(previous_attn, axis=-1)  # This will give us an array of shape (102400,)
-            #slot_ids_current = np.argmax(current_attn, axis=-1)  # This will give us an array of shape (102400,)
-            #slot_ids_current_ordered = np.argmax(current_attn_ordered, axis=-1)  # This will give us an array of shape (102400,)
-            # Reshape the result back to 320x320 to match the original image shape
-           # slot_ids_image_prev = slot_ids_prev.reshape(320, 320)
-            #slot_ids_image_current = slot_ids_current.reshape(320, 320)
-            #slot_ids_image_current_ordered = slot_ids_current_ordered.reshape(320, 320)
             cmap = cm.get_cmap('tab20', 6) 
             fig, axs = plt.subplots(1, 3, figsize=(15, 5))
             # Plot previous attention map
@@ -328,7 +348,7 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
 
 
             # Save the plot as an image file
-            plt.savefig(f'/visinf/home/vilab01/spot/plots/slot_ordering_{plotidx}.png')  # You can change the file name and extension (e.g., .jpg, .png)
+            plt.savefig(f'/visinf/home/vilab01/spot/plots/slot_ordering_{iteration}_layer_{layer}.png')  # You can change the file name and extension (e.g., .jpg, .png)
             plt.close()  # Close the plot to avoid displaying it
 
         def hungarian_matching(attn_masks_1: torch.tensor, attn_masks_2: torch.tensor):
@@ -377,16 +397,16 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
             init_slots_list[i+1] = init_slots_ordered
             attn_logits_list[i+1] = attn_logits_ordered
            
-            if DO_PLOT_ORDERING:
+            #if DO_PLOT_ORDERING:
                  # plot if attn_ordered is different 
                  
-                if not torch.all(attn_this_scale_copy == ordered_attn_mask_batch):
-                    ordered_attn_mask_batch = preprocess_attn_mask_batch(attn_list[i+1])
-                    for batch_index in range(attn_this_scale_copy.shape[0]):
-                        if not torch.all(attn_this_scale_copy[batch_index] == ordered_attn_mask_batch[batch_index]):
-                            plot_ordering(attn_previous_scale_copy, attn_this_scale_copy, ordered_attn_mask_batch, batch_index, self.val_mask_size, self.counter)
-                            self.counter += 1
-                            break   
+               # if not torch.all(attn_this_scale_copy == ordered_attn_mask_batch):
+                #    ordered_attn_mask_batch = preprocess_attn_mask_batch(attn_list[i+1])
+                   # for batch_index in range(attn_this_scale_copy.shape[0]):
+                    #    if not torch.all(attn_this_scale_copy[batch_index] == ordered_attn_mask_batch[batch_index]):
+                       #     plot_ordering(attn_previous_scale_copy, attn_this_scale_copy, ordered_attn_mask_batch, batch_index, self.val_mask_size, self.counter)
+                       #     self.counter += 1
+                          #  break   
         return slots_list, attn_list, init_slots_list, attn_logits_list   
      
     def forward(self, x):
@@ -423,17 +443,24 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
             attn_list.append(attn)
             init_slots_list.append(init_slots)
             attn_logits_list.append(attn_logits)
+        
         # ensure slots correspond across scales
-        slots_list, attn_list, init_slots_list, attn_logits_list = self.align_slots(slots_list, attn_list, init_slots_list, attn_logits_list)
+        if not self.slot_initialization == "hierarchical":
+           slots_list, attn_list, init_slots_list, attn_logits_list = self.align_slots(slots_list, attn_list, init_slots_list, attn_logits_list)
+        
+        if LAYER_ATTN_VIS:
+            visualize_layer_attn(attn_list, batch_index = 0, upsample_size=self.val_mask_size, iteration=self.it_counter, n_slots = slots_list[0].shape[1], mode ="distinct")
+            visualize_layer_attn(attn_list, batch_index = 0, upsample_size=self.val_mask_size, iteration=self.it_counter, n_slots = slots_list[0].shape[1], mode = "overlay")
+            self.it_counter += 1
         # Aggregation across scales
-        if self.agg_fct == "weighted":
-            raise NotImplementedError
-            # agg_slots, agg_attn, agg_init_slots, agg_attn_logits = self.weighted_concat(torch.stack(slots_list), torch.stack(attn_list), torch.stack(init_slots_list), torch.stack(attn_logits_list), dim=0)
+        if self.agg_fct == "norm_weight":
+            agg_slots, agg_attn, agg_init_slots, agg_attn_logits = self.normalized_weighting(slots_list, attn_list, init_slots_list, attn_logits_list)
         else:
             agg_slots = self.agg_fct(torch.stack(slots_list), dim=0)
             agg_attn = self.agg_fct(torch.stack(attn_list), dim =0)
             agg_init_slots = self.agg_fct(torch.stack(init_slots_list), dim=0)
             agg_attn_logits = self.agg_fct(torch.stack(attn_logits_list), dim=0)
+        
 
         return agg_slots, agg_attn, agg_init_slots, agg_attn_logits
 

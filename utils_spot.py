@@ -6,6 +6,7 @@ import math
 import random
 import warnings
 import argparse
+from matplotlib import cm, pyplot as plt
 import numpy as np
 from typing import Optional
 from PIL import ImageFilter
@@ -13,7 +14,7 @@ from collections import OrderedDict
 from einops import rearrange, repeat
 from scipy.optimize import linear_sum_assignment
 from scipy.ndimage import generate_binary_structure
-
+import matplotlib.colors as mcolors
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -536,3 +537,108 @@ def check_for_nan_inf(module, input, output):
     elif isinstance(output, (list, tuple)):
         for idx, out in enumerate(output):
             inspect_tensor(out, f"output {idx}")
+
+def visualize_layer_attn(attn_masks_list, batch_index = 0, upsample_size=320, iteration=0, n_slots = 6, mode ="distinct"):
+    """
+    attn_mask_list: torch.Size([b, 196, k]), n_scales
+    """
+
+    def create_custom_cmap(num_colors):
+        if not (6 <= num_colors <= 24):
+            raise ValueError("Number of colors must be between 6 and 24.")
+        colors_6 = [
+        "#1f77b4",  # Blue
+        "#ff7f0e",  # Orange
+        "#2ca02c",  # Green
+        "#d62728",  # Red
+        "#9467bd",  # Purple
+        "#8c564b"   # Brown
+        ]
+        if num_colors == 6:
+            return mcolors.ListedColormap(colors_6, name=f"custom_{num_colors}")
+        colors_7 = [
+        "#1f77b4",  # Blue
+        "#ff7f0e",  # Orange
+        "#2ca02c",  # Green
+        "#d62728",  # Red
+        "#9467bd",  # Purple
+        "#8c564b",  # Brown
+        "#e377c2"   # Pink
+        ]
+        if num_colors == 7:
+            return mcolors.ListedColormap(colors_7, name=f"custom_{num_colors}")
+        # Generate distinct colors
+        base_colors = [
+            "#1f77b4",  # Blue
+            "#ff7f0e",  # Orange
+            "#2ca02c",  # Green
+            "#d62728",  # Red
+            "#9467bd",  # Purple
+            "#8c564b",  # Brown
+            "#e377c2",  # Pink
+            "#7f7f7f",  # Gray
+            "#bcbd22",  # Lime
+            "#17becf",  # Cyan
+            "#aec7e8",  # Light Blue
+            "#ffbb78",  # Light Orange
+            "#98df8a",  # Light Green
+            "#ff9896",  # Light Red
+            "#c5b0d5",  # Light Purple
+            "#c49c94",  # Light Brown
+            "#f7b6d2",  # Light Pink
+            "#c7c7c7",  # Light Gray
+            "#dbdb8d",  # Light Lime
+            "#9edae5",  # Light Cyan
+            "#393b79",  # Dark Blue
+            "#637939",  # Dark Green
+            "#8c6d31",  # Dark Orange
+            "#843c39"   # Dark Red
+        ]
+
+        colors = base_colors[:num_colors]
+        return mcolors.ListedColormap(colors, name=f"custom_{num_colors}")
+    if iteration%100 != 0:
+        return
+    attn_mask_list = [attn_mask[batch_index] for attn_mask in attn_masks_list]
+    h_w = int(math.sqrt(attn_mask_list[0].shape[0]))
+    # de-flatten
+    attn_mask_list_bi = [attn_mask.reshape(h_w, h_w, n_slots) for attn_mask in attn_mask_list]
+    attn_mask_upsampled = [F.interpolate(
+        attn_mask.permute(2, 0, 1).unsqueeze(0), 
+        size=(320, 320),  
+        mode='bilinear'
+    ).squeeze(0).permute(1, 2, 0)  for attn_mask in attn_mask_list_bi]
+    attn_masks_np = [attn_mask.clone().detach().cpu().numpy() for attn_mask in attn_mask_upsampled]
+    cmap = create_custom_cmap(n_slots)
+    norm = plt.Normalize(vmin=0, vmax=n_slots-1)
+    if mode == "distinct":
+        attn_slot_id = [np.argmax(attn_mask, axis=-1) for attn_mask in attn_masks_np]
+        fig, axs = plt.subplots(1, len(attn_slot_id), figsize=(14, 8))
+        # Plot previous attention map
+        for i, attn in enumerate(attn_slot_id):
+            im = axs[i].imshow(attn, cmap=cmap, norm = norm)
+            axs[i].set_title(f"SA at layer {i}")
+            axs[i].axis('off')  # Remove axis ticks
+        #fig.colorbar(im, ax=axs, orientation='horizontal', fraction=0.02, pad=0.04, ticks=np.arange(6))
+        fig.tight_layout()
+        plt.savefig(f'/visinf/home/vilab01/spot/plots/layer_attn_vis/distinct_{iteration}.png')  # You can change the file name and extension (e.g., .jpg, .png)
+        plt.close() 
+        # Add a colorbar (legend) that maps color to slot number
+      
+    elif mode == "overlay":
+        fig, axs = plt.subplots(1, len(attn_masks_np), figsize=(14, 8))
+        for i, attn in enumerate(attn_masks_np):
+            slot_attn_masks = [attn[:, :, j] for j in range(attn.shape[2])] # 6x (320, 320)
+            for slot_attn in slot_attn_masks:
+                im = axs[i].imshow(slot_attn, cmap=cmap, alpha=0.3)
+            axs[i].set_title(f"SA at layer {i}")
+            axs[i].axis('off')  # Remove axis ticks
+
+        #fig.colorbar(im, ax=axs, orientation='horizontal', fraction=0.02, pad=0.04, ticks=np.arange(6))
+        fig.tight_layout()
+        plt.savefig(f'/visinf/home/vilab01/spot/plots/layer_attn_vis/overlay_{iteration}.png')  # You can change the file name and extension (e.g., .jpg, .png)
+        plt.close() 
+
+        
+    
+        
