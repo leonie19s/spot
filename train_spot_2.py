@@ -97,7 +97,6 @@ def get_args_parser():
     parser.add_argument("--slot_initialization", type=str, default=None, help="initialization method for slots")
     parser.add_argument('--shared_weights', type=bool, default=False, help='if the weights of the slot attention encoder module are shared')
     parser.add_argument('--data_cut', type=float, default=1, help='factor how much of the original length of the data is used')
-    parser.add_argument('--log_folder_name', type=str, default=None, help='folder to save the logs and model')
     
     return parser
 
@@ -458,6 +457,12 @@ def train(args):
     
             print('====> Best Loss = {:F} @ Epoch {}'.format(best_val_loss, best_epoch))
     
+    # Compute distances in feature space between layers
+    # pairwise_distances = student_model.layer_dist_accumulator / student_model.accumulator_counter
+    # for i, dist in enumerate(pairwise_distances):
+    #     print(f"Mean euclidean distance in feature space from layer {i} to {i+1} is: {pairwise_distances[i]}")
+    writer.close()
+
     writer.close()
 
 if __name__ == '__main__':
