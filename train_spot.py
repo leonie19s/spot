@@ -432,6 +432,10 @@ def train(args):
     
             print('====> Best Loss = {:F} @ Epoch {}'.format(best_val_loss, best_epoch))
     
+    # Compute distances in feature space between layers
+    # pairwise_distances = model.layer_dist_accumulator / model.accumulator_counter
+    # for i, dist in enumerate(pairwise_distances):
+    #     print(f"Mean euclidean distance in feature space from layer {i} to {i+1} is: {pairwise_distances[i]}")
     writer.close()
 
 if __name__ == '__main__':

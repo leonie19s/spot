@@ -114,7 +114,7 @@ def plot_comparison_in_multiple_metrics(
     plt.style.use("ggplot")
 
     # Create the plot
-    fig, ax = plt.subplots(1, 1)
+    fig, ax = plt.subplots(1, 1, figsize=(6, 5))
     ax.grid(True, linestyle='--', linewidth=0.9, alpha=0.75, zorder=-1)
 
     # Create the ticks with the metrics as labels
@@ -138,7 +138,7 @@ def plot_comparison_in_multiple_metrics(
 
     # Aesthetics and saving
     ax.set_ylabel("Score")
-    ax.set_ylim(0, 70)
+    ax.set_ylim(30, 60)
     plt.legend()
     plt.savefig(os.path.join(PLOT_PATH, f"comparison_all_metrics"), bbox_inches="tight")
 
@@ -164,6 +164,9 @@ def main():
         "Max"
     ]
 
+    # runs = ["baseline/dinosaur_baseline", "ablations/residual_2_5_8_11"]
+    # pretty_labels = ["Baseline", "Our best"]
+
     # Sanity check
     assert len(runs) == len(pretty_labels) or len(pretty_labels) == 0, "Either supply as many labels as there are runs, or none at all"
 
@@ -178,10 +181,10 @@ def main():
     # Possible metrics: 
     # 'mse', 'ari (slots)', 'ari (decoder)', 'mbo_c', 'mbo_i', 'miou', 
     # 'mbo_c (slots)', 'mbo_i (slots)', 'miou (slots)', 'best_loss'
-    plot_one_metric(runs, run_dfs, pretty_labels, "miou (slots)")
+    plot_one_metric(runs, run_dfs, pretty_labels, "mbo_c (slots)")
 
     # Plot comparison in all metrics
-    plot_comparison_in_multiple_metrics(runs, run_dfs, pretty_labels, np.array(["mbo_c (slots)", "mbo_i (slots)", "miou (slots)"]))
+    plot_comparison_in_multiple_metrics(runs, run_dfs, pretty_labels, np.array(["miou (slots)"]))
 
 
 if __name__ == "__main__":

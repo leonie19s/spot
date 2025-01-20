@@ -29,6 +29,10 @@ class MSSPOT(nn.Module):
             for param in self.second_encoder.parameters():
                 param.requires_grad = False  # not update by gradient
 
+        # For computing distances between layers
+        # self.layer_dist_accumulator = np.zeros(len(encoder.blocks) - 1)
+        # self.accumulator_counter = 0
+        
         # Estimate number of tokens for images of size args.image_size and
         # embedding size (d_model)
         with torch.no_grad():
@@ -40,7 +44,7 @@ class MSSPOT(nn.Module):
 
         self.num_slots = args.num_slots
         self.d_model = args.d_model # input_channels
-        
+
         sae_class = MultiScaleSlotAttentionEncoderShared if args.shared_weights else MultiScaleSlotAttentionEncoder
         self.slot_attn = sae_class(
             args.num_iterations, args.num_slots,
@@ -150,9 +154,20 @@ class MSSPOT(nn.Module):
 
         ms_x_temp = [] # List of ModuleList
         ms_x =[]
+
+        # For computing difference between layers
+        # last_layer = None
+
         # encoder.blocks are ModuleList
         for i, blk in enumerate(encoder.blocks):
             x = blk(x)
+
+            # Computing difference between layers through euclidean
+            # x_flat = x.view(x.shape[0], -1)
+            # if last_layer is not None:
+            #     self.layer_dist_accumulator[i - 1] += torch.norm(x_flat - last_layer, dim=1).mean()
+            # last_layer = x_flat
+
             if i == len(encoder.blocks) - 1 and self.encoder_final_norm:
                 x = encoder.norm(x)
             if i in self.ms_which_encoder_layers:
@@ -162,6 +177,7 @@ class MSSPOT(nn.Module):
             # spatial_features = patch_features.mean(dim=-1).reshape(14, 14)
             # plt.imsave(f"{i}.png", spatial_features)
 
+        # self.accumulator_counter += 1
         offset = 1
         if self.which_encoder in ['dinov2_vitb14_reg', 'dinov2_vits14_reg']:
             offset += encoder.num_register_tokens
@@ -304,7 +320,7 @@ class MSSPOT(nn.Module):
 
         # Mean-Square-Error loss
         H_enc, W_enc = int(math.sqrt(emb_target.shape[1])), int(math.sqrt(emb_target.shape[1]))
-       
+        
         loss_mse = ((emb_target - dec_recon) ** 2).sum()/(B*H_enc*W_enc*self.d_model)
 
         # Reshape the slot and decoder-slot attentions.
