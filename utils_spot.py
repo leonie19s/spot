@@ -3,6 +3,7 @@ https://github.com/singhgautam/slate/blob/master/utils.py
 https://github.com/amazon-science/object-centric-learning-framework/blob/main/ocl/utils/masking.py
 '''
 import math
+import os
 import random
 import warnings
 import argparse
@@ -538,11 +539,10 @@ def check_for_nan_inf(module, input, output):
         for idx, out in enumerate(output):
             inspect_tensor(out, f"output {idx}")
 
-def visualize_layer_attn(attn_masks_list, batch_index = 0, upsample_size=320, iteration=0, n_slots = 6, mode ="distinct"):
+def visualize_layer_attn(attn_masks_list, image,  fused_mask, batch_index = 0, upsample_size=320, iteration=0, n_slots = 6, mode ="distinct", save_folder="spot/plots/default"):
     """
     attn_mask_list: torch.Size([b, 196, k]), n_scales
     """
-
     def create_custom_cmap(num_colors):
         if not (6 <= num_colors <= 24):
             raise ValueError("Number of colors must be between 6 and 24.")
@@ -567,7 +567,7 @@ def visualize_layer_attn(attn_masks_list, batch_index = 0, upsample_size=320, it
         ]
         if num_colors == 7:
             return mcolors.ListedColormap(colors_7, name=f"custom_{num_colors}")
-        # Generate distinct colors
+
         base_colors = [
             "#1f77b4",  # Blue
             "#ff7f0e",  # Orange
@@ -597,46 +597,73 @@ def visualize_layer_attn(attn_masks_list, batch_index = 0, upsample_size=320, it
 
         colors = base_colors[:num_colors]
         return mcolors.ListedColormap(colors, name=f"custom_{num_colors}")
+    
     if iteration%100 != 0:
         return
+    
+    # preprocess
     attn_mask_list = [attn_mask[batch_index] for attn_mask in attn_masks_list]
     h_w = int(math.sqrt(attn_mask_list[0].shape[0]))
-    # de-flatten
     attn_mask_list_bi = [attn_mask.reshape(h_w, h_w, n_slots) for attn_mask in attn_mask_list]
     attn_mask_upsampled = [F.interpolate(
         attn_mask.permute(2, 0, 1).unsqueeze(0), 
-        size=(320, 320),  
+        size=(upsample_size, upsample_size),  
         mode='bilinear'
     ).squeeze(0).permute(1, 2, 0)  for attn_mask in attn_mask_list_bi]
     attn_masks_np = [attn_mask.clone().detach().cpu().numpy() for attn_mask in attn_mask_upsampled]
+    fused_mask = fused_mask[batch_index].reshape(h_w, h_w, n_slots)
+    fused_mask = F.interpolate(
+        fused_mask.permute(2, 0, 1).unsqueeze(0), 
+        size=(320, 320),  
+        mode='bilinear'
+    ).squeeze(0).permute(1, 2, 0)
+    fused_mask = fused_mask.clone().detach().cpu().numpy()
+    image = image[batch_index].clone().detach().cpu()
+    image = inv_normalize(image)
+    image = image.permute(1, 2, 0)
+
     cmap = create_custom_cmap(n_slots)
     norm = plt.Normalize(vmin=0, vmax=n_slots-1)
+
+
     if mode == "distinct":
+   
         attn_slot_id = [np.argmax(attn_mask, axis=-1) for attn_mask in attn_masks_np]
-        fig, axs = plt.subplots(1, len(attn_slot_id), figsize=(14, 8))
-        # Plot previous attention map
+        fused_mask = np.argmax(fused_mask, axis=-1)
+        fig, axs = plt.subplots(1, len(attn_slot_id) +2, figsize=(24,3))
+  
+        axs[0].imshow(image)
+        axs[0].axis('off')
+        axs[0].set_title("Input image")
+  
         for i, attn in enumerate(attn_slot_id):
-            im = axs[i].imshow(attn, cmap=cmap, norm = norm)
-            axs[i].set_title(f"SA at layer {i}")
-            axs[i].axis('off')  # Remove axis ticks
-        #fig.colorbar(im, ax=axs, orientation='horizontal', fraction=0.02, pad=0.04, ticks=np.arange(6))
+            im = axs[i+1].imshow(attn, cmap=cmap, norm = norm)
+            axs[i+1].set_title(f"SA at layer {i}")
+            axs[i+1].axis('off') 
+        axs[-1].imshow(fused_mask, cmap=cmap, norm = norm)
+        axs[-1].set_title("Fused SA")
+        axs[-1].axis('off')  
         fig.tight_layout()
-        plt.savefig(f'/visinf/home/vilab01/spot/plots/layer_attn_vis/distinct_{iteration}.png')  # You can change the file name and extension (e.g., .jpg, .png)
+        plt.savefig(f'{save_folder}/distinct_{iteration}.png')
         plt.close() 
-        # Add a colorbar (legend) that maps color to slot number
+    
       
     elif mode == "overlay":
-        fig, axs = plt.subplots(1, len(attn_masks_np), figsize=(14, 8))
+        fig, axs = plt.subplots(1, len(attn_masks_np) +2, figsize=(24,3))
+        attn_masks_np.append(fused_mask)
+        axs[0].imshow(image)
+        axs[0].set_title("Input image")
+        axs[0].axis('off')
         for i, attn in enumerate(attn_masks_np):
             slot_attn_masks = [attn[:, :, j] for j in range(attn.shape[2])] # 6x (320, 320)
             for slot_attn in slot_attn_masks:
-                im = axs[i].imshow(slot_attn, cmap=cmap, alpha=0.3)
-            axs[i].set_title(f"SA at layer {i}")
-            axs[i].axis('off')  # Remove axis ticks
+                im = axs[i+1].imshow(slot_attn, cmap=cmap, alpha=0.3)
+            axs[i+1].set_title(f"SA at layer {i}")
+            axs[i+1].axis('off')  
+        axs[-1].set_title("Fused SA")
 
-        #fig.colorbar(im, ax=axs, orientation='horizontal', fraction=0.02, pad=0.04, ticks=np.arange(6))
         fig.tight_layout()
-        plt.savefig(f'/visinf/home/vilab01/spot/plots/layer_attn_vis/overlay_{iteration}.png')  # You can change the file name and extension (e.g., .jpg, .png)
+        plt.savefig(f'{save_folder}/overlay_{iteration}.png')
         plt.close() 
 
         

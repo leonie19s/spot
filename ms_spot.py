@@ -134,7 +134,11 @@ class MSSPOT(nn.Module):
             def hook_fn_forward_attn(module, input):
                 self.dec_slots_attns.append(input[0])
             self.remove_handle = self.dec._modules["blocks"][-1]._modules["encoder_decoder_attn"]._modules["attn_dropout"].register_forward_pre_hook(hook_fn_forward_attn)
-
+        self.visualize_attn = args.visualize_attn
+        log_folder = os.path.join(args.log_path, args.log_folder_name)
+        if self.visualize_attn:
+            os.makedirs(log_folder+os.sep+"plots", exist_ok=True)
+        self.plot_folder_name = os.path.join(log_folder+os.sep+"plots")
 
     def forward_encoder(self, x, encoder):
         encoder.eval()
@@ -288,7 +292,9 @@ class MSSPOT(nn.Module):
         emb_target = emb_target_lst[-1]
         
         # Apply the slot attention
-        slots, slots_attns, init_slots, attn_logits = self.slot_attn(emb_target_lst)
+        plot_image = image if self.visualize_attn else None
+        save_folder = self.plot_folder_name if self.visualize_attn else None
+        slots, slots_attns, init_slots, attn_logits = self.slot_attn(emb_target_lst, plot_image, save_folder)
         attn_logits = attn_logits.squeeze()
         # slots shape: [B, num_slots, Ds]
         # slots_attns shape: [B, N, num_slots]
@@ -298,8 +304,7 @@ class MSSPOT(nn.Module):
 
         # Mean-Square-Error loss
         H_enc, W_enc = int(math.sqrt(emb_target.shape[1])), int(math.sqrt(emb_target.shape[1]))
-        if H_enc != 14 or W_enc != 14:
-            print("H enc and W enc has changed!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+       
         loss_mse = ((emb_target - dec_recon) ** 2).sum()/(B*H_enc*W_enc*self.d_model)
 
         # Reshape the slot and decoder-slot attentions.
