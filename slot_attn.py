@@ -172,14 +172,15 @@ class SlotAttentionEncoder(nn.Module):
 
 class DenseConnector(nn.Module):
     """
-        Implements fusion of slots from multiple layers of the vision encoder through DenseConnector, as described by
+        Implements fusion of slots from multiple layers of the vision encoder through a learned projeciton
+        similar to DenseConnector, as described here:
 
         https://openreview.net/pdf?id=Ioabr42B44
 
         Here, slots are concatenated either along the patch (1) or feature (2+3) dimension and fed through a projection
         layer to obtain a fused slot representation with the same shape as a slot tensor of an individual SA module. The
-        dense channel integration additionally concats pair-wise sums of slots prior to projection. For now, only channel
-        integration was implemented here.
+        dense channel integration concats pair-wise sums of slots prior to projection. For now, only channel integration
+        was implemented here.
 
         To align the slot attention maps (and therefore init_slots and logits), we calculate the individual contribution
         of every slot of every layer to the final fused slot through cosine similarity, and weigh the attention maps by
@@ -189,29 +190,34 @@ class DenseConnector(nn.Module):
 
         (1) Sparse token integration - Concat(x1, x2, x3, dim=-2) [B, 18, 256], Projection -> [B, 6, 256]
         (2) Sparse channel integration - Concat(x1, x2, x3, dim=-1) [B, 6, 256 * 3], Projection -> [B, 6, 256]
-        (3) Dense channel integration - Concat(x1, x2, x3, (x1 + x2), (x2 + x3), dim=-1) [B, 6, 256 * 5], Projection -> [B, 6, 256]
+        (3) Dense channel integration - Concat((x1 + x2), (x2 + x3), dim=-1) [B, 6, 256 * 2], Projection -> [B, 6, 256]
     """
 
-    def __init__(self, slot_dim, num_slots, num_layers, dense=False):
+    def __init__(self, slot_dim, num_layers, dc_type, mlp_depth):
         super().__init__()
 
+        # Properly parse type
+        if dc_type == "dense":
+            self.dense = True
+        elif dc_type == "sparse":
+            self.dense = False
+        else:
+            raise ValueError(f"The DenseConnector integration type has to be 'sparse' or 'dense', but got {dc_type}")
+        
         # Store parameters
         self.num_layers = num_layers
-        self.dense = dense
+        self.hidden_size = slot_dim * 3     # In accordance to hidden_size * 3
+        self.mlp_depth = mlp_depth
 
-        # MLP for channel integration
-        if dense:
-            self.mlp = nn.Sequential(
-                nn.Linear(slot_dim * (2 * num_layers - 1), 512),
-                nn.ReLU(),
-                nn.Linear(512, slot_dim)
-            )
-        else:
-            self.mlp = nn.Sequential(
-                nn.Linear(slot_dim * num_layers, 512),
-                nn.ReLU(),
-                nn.Linear(512, slot_dim)
-            )
+        # Init MLP for channel integration
+        modules = [nn.Linear(slot_dim * (num_layers - (1 if self.dense else 0)), self.hidden_size)]
+        for _ in range(1, mlp_depth):
+            modules.append(nn.GELU())
+            modules.append(nn.Linear(self.hidden_size, self.hidden_size))
+        modules.append(nn.GELU())
+        modules.append(nn.Linear(self.hidden_size, slot_dim))
+        modules.append(nn.LayerNorm(slot_dim))
+        self.mlp = nn.Sequential(*modules)
 
     def forward(self, slot_list, slot_att_list, init_slot_list, attn_logits_list):
         """
@@ -221,13 +227,14 @@ class DenseConnector(nn.Module):
             attn_logits_list: List of attention logits [B, 1, H_emb * W_emb, num_slots]) with len = num_layers
         """
         
-        # Add [x_i + x_(i+1)] to concat list if we have dense integration, also add the attention maps pair-wise
+        # Add pair-wise [x_i + x_(i+1)] to concat list if we have dense integration, for all lists
         if self.dense:
-            for i in range(self.num_layers - 1):
-                slot_list.append(slot_list[i] + slot_list[i + 1])
-                slot_att_list.append(slot_att_list[i] + slot_att_list[i + 1])
+            slot_list = [(slot_list[i] + slot_list[i + 1]) / 2 for i in range(self.num_layers - 1)]
+            slot_att_list = [(slot_att_list[i] + slot_att_list[i + 1]) / 2 for i in range(self.num_layers - 1)]
+            init_slot_list = [(init_slot_list[i] + init_slot_list[i + 1]) / 2 for i in range(self.num_layers - 1)]
+            attn_logits_list = [(attn_logits_list[i] + attn_logits_list[i + 1]) / 2 for i in range(self.num_layers - 1)]
 
-        # Concat along feature dimension to [B, num_slots, slot_dim * num_layers (+ num_layers - 1 if dense)]
+        # Concat along feature dimension to [B, num_slots, slot_dim * num_layers (num_layers - 1 if dense)]
         concat = torch.concat(slot_list, dim=-1)
 
         # Project concat down to original shape [B, num_slots, slot_dim]
@@ -316,7 +323,9 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
 
 
     def __init__(self, num_iterations, num_slots, input_channels, slot_size, mlp_hidden_size, pos_channels,
-                  truncate='bi-level', init_method='embedding', ms_which_encoder_layers = [9, 10, 11], concat_method = "sum", slot_initialization=None, val_mask_size=320, num_heads = 1, drop_path = 0.0):
+                  truncate='bi-level', init_method='embedding', ms_which_encoder_layers = [9, 10, 11], concat_method = "sum",
+                  slot_initialization=None, val_mask_size=320, dc_type="sparse", dc_mlp_depth=1, num_heads = 1, drop_path = 0.0
+    ):
         super().__init__()
         self.it_counter = 0
         self.ms_which_encoder_layers = ms_which_encoder_layers
@@ -342,7 +351,7 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
             self.agg_fct = "norm_weight"
             #print("using weighted concat")
         elif concat_method == "denseconnector":
-            self.agg_fct = DenseConnector(slot_size, num_slots, len(ms_which_encoder_layers))
+            self.agg_fct = DenseConnector(slot_size, len(ms_which_encoder_layers), dc_type, dc_mlp_depth)
         elif concat_method != "sum":
             print(f"Provided aggregation function {concat_method} does not exist, defaulting to sum")
 
