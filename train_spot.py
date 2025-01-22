@@ -90,6 +90,7 @@ def get_args_parser():
     parser.add_argument('--log_folder_name', type=str, default=None, help='folder to save the logs and model')
     parser.add_argument('--dense_connector_type', type=str, default="sparse", help='Integration of the denseconnector, either "sparse" or "dense". Only use this if --concat_method = denseconnector')
     parser.add_argument('--dense_connector_mlp_depth', type=int, default=1, help='Depth of the MLP used in the dense connector. Only use this if --concat_method = denseconnector')
+    parser.add_argument('--visualize_attn', type=bool, default=False)
     return parser
 
 def train(args):

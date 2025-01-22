@@ -420,7 +420,7 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
                           #  break   
         return slots_list, attn_list, init_slots_list, attn_logits_list   
      
-    def forward(self, x):
+    def forward(self, x, image=None, save_folder=None):
         # Lists for storing intermediate scale results
         slots_list = []
         attn_list = []
@@ -459,10 +459,6 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
         if not self.slot_initialization == "hierarchical":
            slots_list, attn_list, init_slots_list, attn_logits_list = self.align_slots(slots_list, attn_list, init_slots_list, attn_logits_list)
         
-        if LAYER_ATTN_VIS:
-            visualize_layer_attn(attn_list, batch_index = 0, upsample_size=self.val_mask_size, iteration=self.it_counter, n_slots = slots_list[0].shape[1], mode ="distinct")
-            visualize_layer_attn(attn_list, batch_index = 0, upsample_size=self.val_mask_size, iteration=self.it_counter, n_slots = slots_list[0].shape[1], mode = "overlay")
-            self.it_counter += 1
         # Aggregation across scales
         if self.concat_method_str == "norm_weight":
             agg_slots, agg_attn, agg_init_slots, agg_attn_logits = self.normalized_weighting(slots_list, attn_list, init_slots_list, attn_logits_list)
@@ -474,7 +470,10 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
             agg_init_slots = self.agg_fct(torch.stack(init_slots_list), dim=0)
             agg_attn_logits = self.agg_fct(torch.stack(attn_logits_list), dim=0)
         
-
+        if image is not None:
+            visualize_layer_attn(attn_list, image, agg_attn, batch_index = 0, upsample_size=self.val_mask_size, iteration=self.it_counter, n_slots = slots_list[0].shape[1], mode ="distinct", save_folder=save_folder)
+            visualize_layer_attn(attn_list, image, agg_attn, batch_index = 0, upsample_size=self.val_mask_size, iteration=self.it_counter, n_slots = slots_list[0].shape[1], mode = "overlay", save_folder = save_folder)
+            self.it_counter += 1
         return agg_slots, agg_attn, agg_init_slots, agg_attn_logits
 
       

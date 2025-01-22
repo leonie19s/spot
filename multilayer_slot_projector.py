@@ -2,7 +2,6 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from deformable_attention.ops.modules import MSDeformAttn
 from functools import partial
 
 
@@ -264,6 +263,9 @@ class DenseConnector(nn.Module):
 class MSCrossAttnBlock(nn.Module):
     def __init__(self, d_model=256, n_levels=4, n_heads=16, n_points=4, norm_layer=partial(nn.LayerNorm, eps=1e-6),
                  dropout=0.1, init_values=0.):
+        
+        from deformable_attention.ops.modules import MSDeformAttn
+
         super().__init__()
         self.select_layer = [_ for _ in range(n_levels)]
         self.query_layer = -1 
@@ -280,6 +282,7 @@ class MSCrossAttnBlock(nn.Module):
         self._reset_parameters()
 
     def _reset_parameters(self):
+        from deformable_attention.ops.modules import MSDeformAttn
         for p in self.parameters():
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
