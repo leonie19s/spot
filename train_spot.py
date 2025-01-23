@@ -23,7 +23,7 @@ from utils_spot import inv_normalize, cosine_scheduler, visualize, bool_flag, lo
 import models_vit
 
 # Set available devices here, do NOT use GPU 0 on node 20
-device_ids =[5]
+device_ids =[0]
 os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
 
@@ -83,15 +83,13 @@ def get_args_parser():
     parser.add_argument('--eval_permutations',  type=str, default='standard', help='which permutation')
 
     parser.add_argument('--ms_which_encoder_layers', type=str, default="9,10,11", help= "Which block layers of the encoders are to be used for multi-scale slot attention, values as ints separated by commas with no whitespace")
-    parser.add_argument('--concat_method', type=str, default='mean', help="how the multiscale attention is concatenated, choose from ['mean', 'sum', 'residual, 'max', 'denseconnector']")
-    parser.add_argument("--slot_initialization", type=str, default=None, help="initialization method for slots")
+    parser.add_argument('--concat_method', type=str, default='mean', help="how the multiscale attention is concatenated, choose from ['mean', 'sum', 'residual, 'max', 'denseconnector', 'transformerconnector']")
     parser.add_argument('--shared_weights', type=bool, default=False, help='if the weights of the slot attention encoder module are shared')
     parser.add_argument('--data_cut', type=float, default=1, help='factor how much of the original length of the data is used')
     parser.add_argument('--log_folder_name', type=str, default=None, help='folder to save the logs and model')
-    parser.add_argument('--dense_connector_type', type=str, default="sparse", help='Integration of the denseconnector, either "sparse" or "dense". Only use this if --concat_method = denseconnector')
-    parser.add_argument('--dense_connector_mlp_depth', type=int, default=1, help='Depth of the MLP used in the dense connector. Only use this if --concat_method = denseconnector')
     parser.add_argument('--visualize_attn', type=bool, default=False)
     return parser
+
 
 def train(args):
     torch.manual_seed(args.seed)
@@ -105,6 +103,7 @@ def train(args):
     arg_str_list = ['{}={}'.format(k, v) for k, v in vars(args).items()]
     arg_str = '__'.join(arg_str_list)
     log_dir = os.path.join(args.log_path, datetime.today().isoformat()) if args.log_folder_name is None else os.path.join(args.log_path, args.log_folder_name)
+    args.log_dir = log_dir
     writer = SummaryWriter(log_dir)
     writer.add_text('hparams', arg_str)
     
@@ -187,7 +186,6 @@ def train(args):
 
     # Create model with hyper parameters
     #model = SPOT(encoder, args, encoder_second)
-
     model = MSSPOT(encoder, args, encoder_second)
     
     # register hooks for MSSPOT

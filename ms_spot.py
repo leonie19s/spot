@@ -47,10 +47,9 @@ class MSSPOT(nn.Module):
 
         sae_class = MultiScaleSlotAttentionEncoderShared if args.shared_weights else MultiScaleSlotAttentionEncoder
         self.slot_attn = sae_class(
-            args.num_iterations, args.num_slots,
-            args.d_model, args.slot_size, args.mlp_hidden_size, args.pos_channels,
-            args.truncate, args.init_method, args.ms_which_encoder_layers, args.concat_method,
-            args.slot_initialization, args.val_mask_size, args.dense_connector_type, args.dense_connector_mlp_depth
+            args.num_iterations, args.num_slots, args.d_model, args.slot_size,
+            args.mlp_hidden_size, args.pos_channels, args.truncate, args.init_method,
+            args.ms_which_encoder_layers, args.concat_method, args.val_mask_size
         )
 
         self.input_proj = nn.Sequential(
@@ -141,7 +140,7 @@ class MSSPOT(nn.Module):
                 self.dec_slots_attns.append(input[0])
             self.remove_handle = self.dec._modules["blocks"][-1]._modules["encoder_decoder_attn"]._modules["attn_dropout"].register_forward_pre_hook(hook_fn_forward_attn)
         self.visualize_attn = args.visualize_attn
-        log_folder = os.path.join(args.log_path, args.log_folder_name)
+        log_folder = args.log_dir
         if self.visualize_attn:
             os.makedirs(log_folder+os.sep+"plots", exist_ok=True)
         self.plot_folder_name = os.path.join(log_folder+os.sep+"plots")

@@ -9,11 +9,22 @@ from ocl_metrics import unsupervised_mask_iou
 import matplotlib.pyplot as plt
 from matplotlib import cm
 from utils_spot import visualize_layer_attn
-from multilayer_slot_projector import DenseConnector, MMFuser
+from multilayer_slot_projector import DenseConnector, SimpleConnector, TransformerConnector, NormWeightConnector
+from functools import partial
 
 
+# Constants
 DO_PLOT_ORDERING = False
 LAYER_ATTN_VIS = False
+FUSION_STRING_MAPPING = {
+    "mean": partial(SimpleConnector, fct=torch.mean),
+    "sum": partial(SimpleConnector, fct=torch.sum),
+    "max": partial(SimpleConnector, fct=lambda x, dim: torch.max(x, dim=dim).values),
+    "residual": partial(SimpleConnector, fct=lambda x, dim: x[-1]),
+    "norm_weight": NormWeightConnector,
+    "denseconnector": DenseConnector,
+    "transformerconnector": TransformerConnector
+}
 
 
 class SlotAttention(nn.Module):
@@ -103,6 +114,7 @@ class SlotAttention(nn.Module):
         
         return slots, attn_vis, attn_logits
 
+
 class SlotAttentionEncoder(nn.Module):
     
     def __init__(self, num_iterations, num_slots,
@@ -176,94 +188,32 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
     """
         Mutli-Scale Slot Attention Encoder where no weights are shared, i.e. every scale has its own encoder
     """
-    def normalized_weighting(self, slots_tensor_list, attn_tensor_list, init_slots_list, attn_logits_list):
-        """ 
-            shape of slots list: [torch.Size([b, k, f])] *  s
-            shape of attn list: [torch.Size([b, l, k])] * s
-            shape of init slots list: [torch.Size([b, k, f])]* s
-            shape of attn logits list: [torch.Size([b, i, l, k])]* s (i=1)
-        """
-       
-        sum_attention_masks = torch.sum(torch.stack(attn_tensor_list, dim=0), dim=0)  # torch.Size([64, 196, 6])
-        scale_contributions = [torch.sum(mask, dim=1, keepdim=True) for mask in attn_tensor_list]  # torch.Size([64, 1, 6]) x 4
-        scale_weights = [contribution / torch.sum(sum_attention_masks, dim=1, keepdim=True) for contribution in scale_contributions] # torch.Size([64, 1, 6])
-
-        combined_slots = torch.stack(slots_tensor_list, dim=0)  # torch.Size([4, 64, 6, 256])
-        scale_weights_slots = torch.stack(scale_weights, dim=0).squeeze(2)  # torch.Size([4, 64, 6])
-        fused_slots = torch.einsum('sbk,sbkf->bkf', scale_weights_slots, combined_slots)
-
-        combined_attention_masks = torch.stack(attn_tensor_list, dim=0)  # torch.Size([4, 64, 196, 6]) sblk
-        scale_weights_masks = torch.stack(scale_weights, dim=0)  # torch.Size([4, 64, 1, 6]) sbik
-        fused_attention_masks = torch.einsum('sblk,sbik->bik', scale_weights_masks, combined_attention_masks)  # [B, N, K]
-        
-        combined_init_slots = torch.stack(init_slots_list, dim=0)  # torch.Size([4, 64, 6, 256]) sbkf
-        fused_init_slots = torch.einsum('sbk,sbkf->bkf', scale_weights_slots, combined_init_slots)  #torch.Size([64, 6, 256])
-        
-        combined_attn_logits = torch.stack(attn_logits_list, dim=0)  # torch.Size([4, 64, 1, 196, 6]) sbilk
-        fused_attn_logits = torch.einsum('sbik,sbilk->bilk', scale_weights_masks, combined_attn_logits)  # torch.Size([64, 1, 196, 6])
-
-        return fused_slots, fused_attention_masks, fused_init_slots, fused_attn_logits    
     
-    def weighted_concat(self, slots_tensor, attn_tensor, init_slots, attn_logits, dim):
-        # TODO: implement this ? maybe
-
-        # compute W_l -> sum of all attention maps
-        W_j_sum = torch.sum(attn_tensor, dim=dim)
-      
-        
-        # initialize empty tensor for weighted slots
-        weighted_slot = torch.zeros_like(slots_tensor[0])
-        weighted_attn = torch.zeros_like(attn_tensor[0])
-        weighted_init_slots = torch.zeros_like(init_slots[0])
-        weighted_attn_logits = torch.zeros_like(attn_logits[0])
-        # iterate over all slots and attention maps
-        for l in range(slots_tensor.shape[0]):
-            W_l = attn_tensor[l]
-            S_l = slots_tensor[l]
-            # compute weighted slot
-            weighted_slot += S_l * (W_l / W_j_sum)
-            # compute weighted attention map
-            weighted_attn += W_l*(W_l / W_j_sum)
-            weighted_init_slots += init_slots[l]*(W_l / W_j_sum)
-            weighted_attn_logits += attn_logits[l]* (W_l / W_j_sum)
-        return weighted_slot, weighted_attn, weighted_init_slots, weighted_attn_logits
-
-
-
-    def __init__(self, num_iterations, num_slots, input_channels, slot_size, mlp_hidden_size, pos_channels,
-                  truncate='bi-level', init_method='embedding', ms_which_encoder_layers = [9, 10, 11], concat_method = "sum",
-                  slot_initialization=None, val_mask_size=320, dc_type="sparse", dc_mlp_depth=1, num_heads = 1, drop_path = 0.0
+    def __init__(
+        self, num_iterations, num_slots, input_channels, slot_size, mlp_hidden_size, pos_channels,
+        truncate='bi-level', init_method='embedding', ms_which_encoder_layers = [9, 10, 11], 
+        fusion_method = "mean", val_mask_size=320, num_heads=1, drop_path=0.0
     ):
         super().__init__()
         self.it_counter = 0
+
+        # Store hyper-paramters
         self.ms_which_encoder_layers = ms_which_encoder_layers
+        self.residual = fusion_method == "residual"
+        self.val_mask_size = val_mask_size
+
+        # Create the ensemble of slot attention encoders
         self.slot_attention_encoders = nn.ModuleList([
             SlotAttentionEncoder(
                 num_iterations, num_slots, input_channels, slot_size, mlp_hidden_size,
                 pos_channels, truncate, init_method, num_heads, drop_path
             ) for i in range(len(ms_which_encoder_layers))
         ])
-        self.slot_initialization = slot_initialization
-        self.val_mask_size = val_mask_size
-        self.concat_method_str = concat_method
-        # Set aggregation function according to provided args, default to mean
-        self.agg_fct = torch.sum
-        if concat_method == "mean":
-            self.agg_fct = torch.mean
-        elif concat_method == "max":
-            self.agg_fct = lambda x, dim: torch.max(x, dim = dim).values
-        elif concat_method == "None" or concat_method == None:
-            # then we only want the last slot from the list
-            self.agg_fct = lambda x, dim: x[-1]
-        elif concat_method == "norm_weight":
-            self.agg_fct = "norm_weight"
-            #print("using weighted concat")
-        elif concat_method == "denseconnector":
-            self.agg_fct = DenseConnector(slot_size, len(ms_which_encoder_layers), dc_type, dc_mlp_depth)
-        elif concat_method == "mmfuser":
-            self.agg_fct = MMFuser(slot_size, len(ms_which_encoder_layers), dc_type, dc_mlp_depth)
-        elif concat_method != "sum":
-            print(f"Provided aggregation function {concat_method} does not exist, defaulting to sum")
+        
+        # Set fusion method according to provided args
+        if fusion_method not in FUSION_STRING_MAPPING:
+            raise ValueError(f"The provided fusion {fusion_method} method does not exist!")
+        self.fusion_module = FUSION_STRING_MAPPING.get(fusion_method)(slot_size, len(ms_which_encoder_layers))
 
     def align_slots(self, slots_list, attn_list, init_slots_list, attn_logits_list):
         """
@@ -434,8 +384,8 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
             # Whether this is the last layer, necessary for mlp / norm at final layer
             is_last_layer = True if i == len(x) - 1 else False
 
-            # Hierarchical slot initialization
-            if self.slot_initialization == "hierarchical":
+            # Hierarchical slot initialization for residual connection
+            if self.residual:
                 if i == 0:
                     slots, attn, init_slots, attn_logits = sae(inp, None, is_last_layer)
                     old_slots = slots.clone().detach() # detach as to not compute gradients for hierarchical slot init
@@ -456,24 +406,19 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
             attn_logits_list.append(attn_logits)
         
         # ensure slots correspond across scales
-        if not self.slot_initialization == "hierarchical":
+        if not self.residual:
            slots_list, attn_list, init_slots_list, attn_logits_list = self.align_slots(slots_list, attn_list, init_slots_list, attn_logits_list)
         
-        # Aggregation across scales
-        if self.concat_method_str == "norm_weight":
-            agg_slots, agg_attn, agg_init_slots, agg_attn_logits = self.normalized_weighting(slots_list, attn_list, init_slots_list, attn_logits_list)
-        elif self.concat_method_str == "denseconnector" or self.concat_method_str == "mmfuser":
-            agg_slots, agg_attn, agg_init_slots, agg_attn_logits = self.agg_fct(slots_list, attn_list, init_slots_list, attn_logits_list)
-        else:
-            agg_slots = self.agg_fct(torch.stack(slots_list), dim=0)
-            agg_attn = self.agg_fct(torch.stack(attn_list), dim =0)
-            agg_init_slots = self.agg_fct(torch.stack(init_slots_list), dim=0)
-            agg_attn_logits = self.agg_fct(torch.stack(attn_logits_list), dim=0)
-        
+        # Fusion across scales
+        agg_slots, agg_attn, agg_init_slots, agg_attn_logits = self.fusion_module(slots_list, attn_list, init_slots_list, attn_logits_list)
+
+        # Visualization of slot attention layers and fused result
         if image is not None:
             visualize_layer_attn(attn_list, image, agg_attn, batch_index = 0, upsample_size=self.val_mask_size, iteration=self.it_counter, n_slots = slots_list[0].shape[1], mode ="distinct", save_folder=save_folder)
             visualize_layer_attn(attn_list, image, agg_attn, batch_index = 0, upsample_size=self.val_mask_size, iteration=self.it_counter, n_slots = slots_list[0].shape[1], mode = "overlay", save_folder = save_folder)
             self.it_counter += 1
+        
+        # Return results
         return agg_slots, agg_attn, agg_init_slots, agg_attn_logits
 
       
