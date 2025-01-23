@@ -166,8 +166,7 @@ class SimpleConnector(nn.Module):
     def __init__(self, slot_dim, num_layers, fct=None):
         super(SimpleConnector, self).__init__()
         self.fct = fct
-        # self.map_fuser = MapFusionSimple(196, num_layers, fct)
-        self.map_fuser = MapFusionWithLearnedWeights(196, num_layers)
+        self.map_fuser = MapFusionSimple(196, num_layers, fct)
         
     def __call__(self, slot_list, slot_att_list, init_slot_list, attn_logits_list):
         fused_slots = self.fct(torch.stack(slot_list), dim=0)
@@ -240,7 +239,7 @@ class TransformerConnector(nn.Module):
         )
 
         # For attention map, init slot and attn logits fusion
-        self.map_fuser = MapFusionThroughContribution(196, num_layers)
+        self.map_fuser = MapFusionPixelwiseWithLearnedWeights(196, num_layers)
     
     def forward(self, slot_list, slot_att_list, init_slot_list, attn_logits_list):
         """
