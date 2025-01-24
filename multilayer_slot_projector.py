@@ -239,7 +239,7 @@ class TransformerConnector(nn.Module):
         )
 
         # For attention map, init slot and attn logits fusion
-        self.map_fuser = MapFusionPixelwiseWithLearnedWeights(196, num_layers)
+        self.map_fuser = MapFusionThroughContribution(196, num_layers)
     
     def forward(self, slot_list, slot_att_list, init_slot_list, attn_logits_list):
         """

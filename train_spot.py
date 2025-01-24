@@ -23,7 +23,7 @@ from utils_spot import inv_normalize, cosine_scheduler, visualize, bool_flag, lo
 import models_vit
 
 # Set available devices here, do NOT use GPU 0 on node 20
-device_ids =[0]
+device_ids =[2]
 os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
 
@@ -428,7 +428,7 @@ def train(args):
                 'optimizer': optimizer.state_dict()
             }
     
-            #torch.save(checkpoint, os.path.join(log_dir, 'checkpoint.pt.tar'))
+            torch.save(checkpoint, os.path.join(log_dir, 'checkpoint.pt.tar'))
     
             print('====> Best Loss = {:F} @ Epoch {}'.format(best_val_loss, best_epoch))
     
