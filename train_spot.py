@@ -23,7 +23,7 @@ from utils_spot import inv_normalize, cosine_scheduler, visualize, bool_flag, lo
 import models_vit
 
 # Set available devices here, do NOT use GPU 0 on node 20
-device_ids =[2]
+device_ids =[3]
 os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
 
@@ -266,6 +266,8 @@ def train(args):
     # check for NaNs and Infs in backward pass
     torch.autograd.set_detect_anomaly(True)
     print(datetime.now())
+    print(f"PID = {os.getpid()}")
+    print(f"Hostname = {os.uname().nodename}")
     for epoch in range(start_epoch, args.epochs):
     
         model.train()

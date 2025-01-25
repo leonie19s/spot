@@ -598,7 +598,7 @@ def visualize_layer_attn(attn_masks_list, image,  fused_mask, batch_index = 0, u
         colors = base_colors[:num_colors]
         return mcolors.ListedColormap(colors, name=f"custom_{num_colors}")
     
-    if iteration%100 != 0:
+    if iteration%1000 != 0:
         return
     
     # preprocess
