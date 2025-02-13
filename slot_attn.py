@@ -258,13 +258,51 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
                 raise ValueError("Preprocessing of input did not work as expected")
             return input_one_hot_flattened
         
-        def plot_ordering(previous_attn, current_attn, current_attn_ordered, batch_index, upsample_size, iteration):
+        def plot_ordering(previous_attn, current_attn, current_attn_ordered, batch_index, upsample_size, iteration, i):
             """
             expected attn shape [B, 196, 6]). Creates a threefold plot for the ordering of the attention maps, 
             where the first plot shows the previous attention map, the second the current attention map and 
             the third the ordered current attention map by colorcoding the six slots
             """
-            previous_attn = previous_attn[batch_index]
+            if iteration%100!=0:
+                return
+            colors_6 = [
+            "#1f77b4",  # Blue
+            "#ff7f0e",  # Orange
+            "#2ca02c",  # Green
+            "#d62728",  # Red
+            "#9467bd",  # Purple
+            "#8c564b"   # Brown
+            ]
+            attn_masks = [previous_attn, current_attn, current_attn_ordered]
+            
+            attn_masks = [attn_mask[batch_index] for attn_mask in attn_masks]
+            h_w = int(math.sqrt(attn_masks[0].shape[0]))
+            attn_mask_list_bi = [attn_mask.reshape(h_w, h_w, previous_attn.shape[2]) for attn_mask in attn_masks]
+            attn_mask_upsampled = [F.interpolate(
+                attn_mask.permute(2, 0, 1).unsqueeze(0), 
+                size=(upsample_size, upsample_size),  
+                mode='bilinear'
+            ).squeeze(0).permute(1, 2, 0)  for attn_mask in attn_mask_list_bi]
+            attn_masks_np = [attn_mask.clone().detach().cpu().numpy() for attn_mask in attn_mask_upsampled]
+
+            attn_slot_id = [np.argmax(attn_mask, axis=-1) for attn_mask in attn_masks_np]
+           
+            fig, axs = plt.subplots(1, len(attn_slot_id), figsize=(24,3))
+    
+            cmap = mcolors.ListedColormap(colors_6)
+            norm = plt.Normalize(vmin=0, vmax=5)
+            titles =["Attention map at layer i", "Attention map at layer i+1", "Ordered Attention map at layer i+1"]
+            for i, attn in enumerate(attn_slot_id):
+                im = axs[i].imshow(attn, cmap=cmap, norm = norm,  interpolation='nearest')
+                axs[i].set_title(titles[i])
+                axs[i].axis('off') 
+            
+            fig.tight_layout()
+            plt.savefig(f'ordering/plot_odering_{iteration}_{i}.png')
+            plt.close() # Close the plot to avoid displaying it
+
+            """previous_attn = previous_attn[batch_index]
             current_attn = current_attn[batch_index]
             current_attn_ordered = current_attn_ordered[batch_index]
          
@@ -281,7 +319,7 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
             current_attn = np.argmax(current_attn, axis=-1)
             current_attn_ordered = np.argmax(current_attn_ordered, axis=-1)
             previous_attn = np.argmax(previous_attn, axis=-1)
-
+            
             #check if current attn is different from current attn ordered
             if np.all(current_attn == current_attn_ordered):
                 print("Attention maps are the same after ordering")
@@ -311,7 +349,7 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
             # Save the plot as an image file
             plt.savefig(f'/visinf/home/vilab01/spot/plots/slot_ordering_{iteration}_layer_{layer}.png')  # You can change the file name and extension (e.g., .jpg, .png)
             plt.close()  # Close the plot to avoid displaying it
-
+            """
         def hungarian_matching(attn_masks_1: torch.tensor, attn_masks_2: torch.tensor):
             """
             expected input size [B, C, H*W]
@@ -325,13 +363,14 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
         for i in range(len(attn_list)-1):
             # in each iteration, we want to order the slots + attention maps at index i+1 
             # based on the slots/attention maps at index i
-            
+            attn_previous_scale_copy = attn_list[i].clone()
+            attn_this_scale_copy = attn_list[i+1].clone()
             # preprocess input
             attn_masks_previous_scale = preprocess_attn_mask_batch(attn_list[i]) # shape [64, 196, 6]
             attn_masks_this_scale = preprocess_attn_mask_batch(attn_list[i+1]) # shape [64, 196, 6]
             
-            attn_previous_scale_copy = attn_masks_previous_scale.clone()
-            attn_this_scale_copy = attn_masks_this_scale.clone()
+            #attn_previous_scale_copy = attn_masks_previous_scale.clone()
+            #attn_this_scale_copy = attn_masks_this_scale.clone()
 
             # placeholders for ordered slots and attention maps etc
             slots_ordered = torch.zeros_like(slots_list[i+1]) # shape [64, 6, 256]
@@ -358,7 +397,9 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
             init_slots_list[i+1] = init_slots_ordered
             attn_logits_list[i+1] = attn_logits_ordered
            
-            #if DO_PLOT_ORDERING:
+            if DO_PLOT_ORDERING:
+                plot_ordering(attn_previous_scale_copy, attn_this_scale_copy, attn_ordered, 0, self.val_mask_size, self.it_counter, i)
+                self.it_counter += 1
                  # plot if attn_ordered is different 
                  
                # if not torch.all(attn_this_scale_copy == ordered_attn_mask_batch):
@@ -405,9 +446,11 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
             init_slots_list.append(init_slots)
             attn_logits_list.append(attn_logits)
         
+        
         # ensure slots correspond across scales
         if not self.residual:
            slots_list, attn_list, init_slots_list, attn_logits_list = self.align_slots(slots_list, attn_list, init_slots_list, attn_logits_list)
+        
         
         # Fusion across scales
         agg_slots, agg_attn, agg_init_slots, agg_attn_logits = self.fusion_module(slots_list, attn_list, init_slots_list, attn_logits_list)
