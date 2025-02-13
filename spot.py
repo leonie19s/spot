@@ -11,6 +11,8 @@ class SPOT(nn.Module):
     def __init__(self, encoder, args, second_encoder=None):
         super().__init__()
 
+        print("--- NORMAL SPOT USED ---")
+
         self.which_encoder = args.which_encoder
         self.encoder = encoder
         self.second_encoder = second_encoder

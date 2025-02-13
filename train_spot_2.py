@@ -23,7 +23,8 @@ IGNORE_INDEX = -100
 
 
 # Set available devices here, do NOT use GPU 0 on node 20
-device_ids =[1]
+device_ids =[2]
+USE_SA_SIGNAL = False
 os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
 
@@ -44,7 +45,6 @@ def get_args_parser():
 
     parser.add_argument('--checkpoint_path', default='checkpoint.pt.tar', help='checkpoint to continue the training, loaded only if exists')
     parser.add_argument('--log_path', default='logs')
-    parser.add_argument('--log_folder_name', type=str, default=None)
     parser.add_argument('--dataset', default='coco', help='coco or voc')
     parser.add_argument('--data_path',  type=str, help='dataset path')
     parser.add_argument('--predefined_movi_json_paths', default = None,  type=str, help='For MOVi datasets, use the same subsampled images. Typically for the 2nd stage of Spot training to retain the same images')
@@ -77,7 +77,7 @@ def get_args_parser():
     parser.add_argument('--pretrained_encoder_weights', type=str, default=None)
     
     parser.add_argument('--truncate',  type=str, default='bi-level', help='bi-level or fixed-point or none')
-    parser.add_argument('--init_method', default='shared_gaussian', help='embedding or shared_gaussian')
+    parser.add_argument('--init_method', default='embedding', help='embedding or shared_gaussian')
     
     parser.add_argument('--train_permutations',  type=str, default='random', help='which permutation')
     parser.add_argument('--eval_permutations',  type=str, default='standard', help='which permutation')
@@ -93,11 +93,12 @@ def get_args_parser():
 
     
     parser.add_argument('--ms_which_encoder_layers', type=str, default="9,10,11", help= "Which block layers of the encoders are to be used for multi-scale slot attention, values as ints separated by commas with no whitespace")
-    parser.add_argument('--concat_method', type=str, default='mean', help="how the multiscale attention is concatenated, choose from ['mean', 'sum']")
-    parser.add_argument("--slot_initialization", type=str, default=None, help="initialization method for slots")
+    parser.add_argument('--concat_method', type=str, default='mean', help="how the multiscale attention is concatenated, choose from ['mean', 'sum', 'residual, 'max', 'denseconnector', 'transformerconnector']")
     parser.add_argument('--shared_weights', type=bool, default=False, help='if the weights of the slot attention encoder module are shared')
     parser.add_argument('--data_cut', type=float, default=1, help='factor how much of the original length of the data is used')
-    
+    parser.add_argument('--log_folder_name', type=str, default=None, help='folder to save the logs and model')
+    parser.add_argument('--visualize_attn', type=bool, default=False)
+
     return parser
 
 def train(args):
@@ -111,10 +112,13 @@ def train(args):
                    
     arg_str_list = ['{}={}'.format(k, v) for k, v in vars(args).items()]
     arg_str = '__'.join(arg_str_list)
-    log_dir = os.path.join(args.log_path, datetime.today().isoformat() if args.log_folder_name is None else args.log_folder_name)
+    log_dir = os.path.join(args.log_path, datetime.today().isoformat()) if args.log_folder_name is None else os.path.join(args.log_path, args.log_folder_name)
+    args.log_dir = log_dir
     writer = SummaryWriter(log_dir)
     writer.add_text('hparams', arg_str)
     
+    print(f"SlotAttention used as signal: {USE_SA_SIGNAL}")
+
     if args.dataset == 'voc':
         train_dataset = PascalVOC(root=args.data_path, split='trainaug', image_size=args.image_size, mask_size = args.image_size)
         val_dataset = PascalVOC(root=args.data_path, split='val', image_size=args.val_image_size, mask_size = args.val_mask_size)
@@ -189,6 +193,7 @@ def train(args):
         print(entry)
 
     student_model = MSSPOT(encoder_new, args, encoder)
+    # student_model = SPOT(encoder_new, args, encoder)
     
     args_teacher = copy.deepcopy(args)
     args_teacher.truncate = args.teacher_truncate
@@ -198,7 +203,8 @@ def train(args):
     args_teacher.finetune_blocks_after = 100
     
     
-    teacher_model = MSSPOT(encoder, args)
+    teacher_model = MSSPOT(encoder, args_teacher)
+    # teacher_model = SPOT(encoder, args_teacher)
    
 
     checkpoint = torch.load(args.teacher_checkpoint_path, map_location='cpu')
@@ -298,8 +304,10 @@ def train(args):
             optimizer.zero_grad()
             
             with torch.no_grad():
-                _, _, dec_slots_attns, _, _, _ = teacher_model(image)
-                dec_masks = dec_slots_attns.argmax(1)
+                _, sa_slots_attns, dec_slots_attns, _, _, _ = teacher_model(image)
+                attn_signal = dec_slots_attns if not USE_SA_SIGNAL else sa_slots_attns
+
+                dec_masks = attn_signal.argmax(1)
                 dec_masks_onehot = torch.nn.functional.one_hot(dec_masks, num_classes=args.num_slots).permute(0,3,1,2)
                 B, H, W = dec_masks.size()
             
@@ -461,7 +469,6 @@ def train(args):
     # pairwise_distances = student_model.layer_dist_accumulator / student_model.accumulator_counter
     # for i, dist in enumerate(pairwise_distances):
     #     print(f"Mean euclidean distance in feature space from layer {i} to {i+1} is: {pairwise_distances[i]}")
-    writer.close()
 
     writer.close()
 

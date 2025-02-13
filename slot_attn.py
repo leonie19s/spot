@@ -152,7 +152,7 @@ class SlotAttentionEncoder(nn.Module):
             num_iterations,
             input_channels, slot_size, mlp_hidden_size, truncate, num_heads, drop_path=drop_path)
     
-    def forward(self, x, previous_slots=None , last_SA = False):
+    def forward(self, x, previous_slots=None , last_SA=True):
         # `image` has shape: [batch_size, img_channels, img_height, img_width].
         # `encoder_grid` has shape: [batch_size, pos_channels, enc_height, enc_width].
         B, *_ = x.size() # batch size?
@@ -451,7 +451,22 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
         if not self.residual:
            slots_list, attn_list, init_slots_list, attn_logits_list = self.align_slots(slots_list, attn_list, init_slots_list, attn_logits_list)
         
-        
+        # Debug printing
+        """
+        if self.it_counter % 500 == 0:
+            slots_debug = [x[0] for x in slots_list]    # throw out batch   [num_slots, 256]
+            slots_att_debug = [x[0] for x in attn_list] # [196, num_slots]
+
+            for layer, (slot_l, slot_att_l) in enumerate(zip(slots_debug, slots_att_debug)):
+                for slot_idx in range(slot_att_l.shape[-1]):
+                    slot_att_this_slot = slot_att_l[:, slot_idx]  # [196, 1]
+                    tmax = torch.max(slot_att_this_slot)
+                    tmin = torch.min(slot_att_this_slot)
+                    print(f"Layer {layer} slot {slot_idx} has min {tmin} and max {tmax}")
+                argm = torch.argmax(slot_att_l, dim=1)
+                unq = torch.unique(argm)
+                print(f"Number of active slots is {len(unq)} , slots {unq.cpu().numpy()} for layer {layer}")
+    	"""
         # Fusion across scales
         agg_slots, agg_attn, agg_init_slots, agg_attn_logits = self.fusion_module(slots_list, attn_list, init_slots_list, attn_logits_list)
 

@@ -18,7 +18,7 @@ import models_vit
 
 
 # Set available devices here, do NOT use GPU 0 on node 20
-device_ids =[2]
+device_ids =[3]
 os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
 parser = argparse.ArgumentParser()
@@ -144,10 +144,9 @@ else:
 if args.num_cross_heads is None:
     args.num_cross_heads = args.num_heads
 
-if args.n_scales > 1:
-    model = MSSPOT(encoder, args, encoder_second)
-else:
-    model = SPOT(encoder, args, encoder_second)
+
+# model = MSSPOT(encoder, args, encoder_second)
+model = SPOT(encoder, args, encoder_second)
 
 checkpoint = torch.load(args.checkpoint_path, map_location='cpu')
 checkpoint['model'] = {k.replace("tf_dec.", "dec."): v for k, v in checkpoint['model'].items()} # compatibility with older runs
@@ -227,7 +226,9 @@ with torch.no_grad():
                  columns=['mBO_i', 'mBO_c', 'FG-ARI',  'MSE', 'mBO_i_slots', 'mBO_c_slots', 'FG-ARI_slots', 'miou', 'miou_slots'])
     
     print(args.checkpoint_path)
-    print(df_results)
+
+    with pd.option_context('display.max_rows', None, 'display.max_columns', None):
+        print(df_results.to_string())
     
     # For plotting
     image = inv_normalize(image)

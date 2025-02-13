@@ -12,7 +12,7 @@ class MapFusionSimple():
     def __init__(self, num_image_patches, num_layers, fct=None):
         self.fct = fct
 
-    def forward(self, fused_slots, slot_list, slot_att_list, init_slot_list, attn_logits_list):
+    def __call__(self, fused_slots, slot_list, slot_att_list, init_slot_list, attn_logits_list):
         """
             fused_slots: Final fused slot [B, num_slots, slot_dim]
             slot_list: List of slots [B, num_slots, slot_dim], e.g. VOC [64, 6, 256] with len = num_layers
@@ -293,7 +293,7 @@ class DenseConnector(nn.Module):
         (3) Dense channel integration - Concat((x1 + x2), (x2 + x3), dim=-1) [B, 6, 256 * 2], Projection -> [B, 6, 256]
     """
 
-    def __init__(self, slot_dim, num_layers, dc_type="sparse", mlp_depth=1):
+    def __init__(self, slot_dim, num_layers, dc_type="dense", mlp_depth=1):
         super().__init__()
 
         # Properly parse type
@@ -305,12 +305,12 @@ class DenseConnector(nn.Module):
             raise ValueError(f"The DenseConnector integration type has to be 'sparse' or 'dense', but got {dc_type}")
         
         # Store parameters
-        self.num_layers = num_layers
+        self.num_layers = num_layers - (1 if self.dense else 0)
         self.hidden_size = slot_dim * 3     # In accordance to hidden_size * 3
         self.mlp_depth = mlp_depth
 
         # Init MLP for channel integration
-        modules = [nn.Linear(slot_dim * (num_layers - (1 if self.dense else 0)), self.hidden_size)]
+        modules = [nn.Linear(slot_dim * self.num_layers, self.hidden_size)]
         for _ in range(1, mlp_depth):
             modules.append(nn.GELU())
             modules.append(nn.Linear(self.hidden_size, self.hidden_size))
@@ -320,7 +320,8 @@ class DenseConnector(nn.Module):
         self.mlp = nn.Sequential(*modules)
 
         # For attention map, init slot and attn logits fusion
-        self.map_fuser = MapFusionPixelwiseWithLearnedWeights(196, num_layers)
+        self.map_fuser = MapFusionWithLearnedWeights(196, self.num_layers)
+        # self.map_fuser = MapFusionWithLearnedWeights(196, self.num_layers + self.num_layers - 1)
 
     def forward(self, slot_list, slot_att_list, init_slot_list, attn_logits_list):
         """
@@ -332,10 +333,10 @@ class DenseConnector(nn.Module):
         
         # Add pair-wise [x_i + x_(i+1)] to concat list if we have dense integration, for all lists
         if self.dense:
-            slot_list = [(slot_list[i] + slot_list[i + 1]) / 2 for i in range(self.num_layers - 1)]
-            slot_att_list = [(slot_att_list[i] + slot_att_list[i + 1]) / 2 for i in range(self.num_layers - 1)]
-            init_slot_list = [(init_slot_list[i] + init_slot_list[i + 1]) / 2 for i in range(self.num_layers - 1)]
-            attn_logits_list = [(attn_logits_list[i] + attn_logits_list[i + 1]) / 2 for i in range(self.num_layers - 1)]
+            slot_list = [(slot_list[i] + slot_list[i + 1]) / 2 for i in range(self.num_layers)]
+            slot_att_list = [(slot_att_list[i] + slot_att_list[i + 1]) / 2 for i in range(self.num_layers)]
+            init_slot_list = [(init_slot_list[i] + init_slot_list[i + 1]) / 2 for i in range(self.num_layers)]
+            attn_logits_list = [(attn_logits_list[i] + attn_logits_list[i + 1]) / 2 for i in range(self.num_layers)]
 
         # Concat along feature dimension to [B, num_slots, slot_dim * num_layers (num_layers - 1 if dense)]
         concat = torch.concat(slot_list, dim=-1)
