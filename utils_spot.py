@@ -274,6 +274,28 @@ def cosine_scheduler(base_value, final_value, epochs, niter_per_ep, warmup_epoch
     assert len(schedule) == epochs * niter_per_ep
     return schedule
 
+def exp_scheduler(base_value, final_value, epochs, niter_per_ep, warmup_epochs=0, start_warmup_value=0, decay_rate=5, plateau_epochs=4):
+    warmup_schedule = np.array([])
+    warmup_iters = warmup_epochs * niter_per_ep
+    
+    # Warmup phase
+    if warmup_epochs > 0:
+        warmup_schedule = np.linspace(start_warmup_value, base_value, warmup_iters)
+    
+    plateau_iters = plateau_epochs * niter_per_ep  # Number of iterations in the plateau phase
+    plateau_schedule = np.full(plateau_iters, base_value)  # Keep constant at base_value
+
+    decay_iters = epochs * niter_per_ep - warmup_iters - plateau_iters
+    iters = np.arange(decay_iters)
+    
+    # Exponential decay phase
+    decay_schedule = final_value + (base_value - final_value) * np.exp(-decay_rate * iters / decay_iters)
+
+    # Combine all schedules
+    schedule = np.concatenate((warmup_schedule, plateau_schedule, decay_schedule))
+    assert len(schedule) == epochs * niter_per_ep
+    return schedule
+
 def bool_flag(s):
     """
     Parse boolean arguments from the command line.
@@ -598,7 +620,7 @@ def visualize_layer_attn(attn_masks_list, image,  fused_mask, batch_index = 0, u
         colors = base_colors[:num_colors]
         return mcolors.ListedColormap(colors, name=f"custom_{num_colors}")
     
-    if iteration%1000 != 0:
+    if iteration%10000 != 0:
         return
     
     # preprocess
