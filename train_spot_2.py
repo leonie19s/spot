@@ -25,7 +25,7 @@ IGNORE_INDEX = -100
 
 
 # Set available devices here, do NOT use GPU 0 on node 20
-device_ids =[5]
+device_ids =[2]
 USE_SA_SIGNAL = True
 os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
@@ -289,6 +289,8 @@ def train(args):
     
     visualize_per_epoch = int(args.epochs*args.eval_viz_percent)
     print(datetime.now())
+    print(f"PID = {os.getpid()}")
+    print(f"Hostname = {os.uname().nodename}")
     teacher_model.eval()
 
     # Time keeping in mins
