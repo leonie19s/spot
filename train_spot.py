@@ -3,8 +3,10 @@ import copy
 import os
 import os.path
 import argparse
+import time
 from tqdm import tqdm
 from datetime import datetime
+import numpy as np
 
 import torch
 from torch.optim import Adam
@@ -23,7 +25,7 @@ from utils_spot import inv_normalize, cosine_scheduler, visualize, bool_flag, lo
 import models_vit
 
 # Set available devices here, do NOT use GPU 0 on node 20
-device_ids =[3]
+device_ids =[5]
 os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
 
@@ -185,7 +187,7 @@ def train(args):
         print(entry)
 
     # Create model with hyper parameters
-    #model = SPOT(encoder, args, encoder_second)
+    # model = SPOT(encoder, args, encoder_second)
     model = MSSPOT(encoder, args, encoder_second)
     
     # register hooks for MSSPOT
@@ -268,8 +270,13 @@ def train(args):
     print(datetime.now())
     print(f"PID = {os.getpid()}")
     print(f"Hostname = {os.uname().nodename}")
+
+    # Time keeping in mins
+    train_epoch_times = []
+
     for epoch in range(start_epoch, args.epochs):
     
+        train_epoch_start_time = time.time()
         model.train()
     
         for batch, image in enumerate(train_loader):
@@ -304,6 +311,11 @@ def train(args):
                     writer.add_scalar('TRAIN/mse', mse.item(), global_step)
                     writer.add_scalar('TRAIN/lr_main', lr_value, global_step)
                     writer.add_scalar('TRAIN/total_norm', total_norm, global_step)
+
+        # Exclude validation run from time-keeping
+        epoch_t = (time.time() - train_epoch_start_time)/60
+        print(f"==> Epoch time: {epoch_t:.4f} min")
+        train_epoch_times.append(epoch_t)
 
         with torch.no_grad():
             model.eval()
@@ -438,6 +450,11 @@ def train(args):
     # pairwise_distances = model.layer_dist_accumulator / model.accumulator_counter
     # for i, dist in enumerate(pairwise_distances):
     #     print(f"Mean euclidean distance in feature space from layer {i} to {i+1} is: {pairwise_distances[i]}")
+            
+    # Compute train times per epoch
+    mean_train_time = np.mean(train_epoch_times)
+    std_train_time = np.std(train_epoch_times)
+    print(f"===> Mean train time per epoch = {mean_train_time:.4f} min with std = {std_train_time:.4f} min")
     writer.close()
 
 if __name__ == '__main__':

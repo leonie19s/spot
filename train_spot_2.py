@@ -6,6 +6,8 @@ from tqdm import tqdm
 from datetime import datetime
 import copy
 import torch
+import time
+import numpy as np
 from torch.optim import Adam
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -23,8 +25,8 @@ IGNORE_INDEX = -100
 
 
 # Set available devices here, do NOT use GPU 0 on node 20
-device_ids =[2]
-USE_SA_SIGNAL = False
+device_ids =[5]
+USE_SA_SIGNAL = True
 os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
 
@@ -288,8 +290,13 @@ def train(args):
     visualize_per_epoch = int(args.epochs*args.eval_viz_percent)
     print(datetime.now())
     teacher_model.eval()
+
+    # Time keeping in mins
+    train_epoch_times = []
+
     for epoch in range(start_epoch, args.epochs):
     
+        train_epoch_start_time = time.time()
         student_model.train()
     
         for batch, image in enumerate(train_loader):
@@ -337,6 +344,11 @@ def train(args):
                     writer.add_scalar('TRAIN/mse', mse.item(), global_step)
                     writer.add_scalar('TRAIN/ce', ce_loss.item(), global_step)
                     writer.add_scalar('TRAIN/lr_main', lr_value, global_step)
+
+        # Exclude validation run from time-keeping
+        epoch_t = (time.time() - train_epoch_start_time)/60
+        print(f"==> Epoch time: {epoch_t:.4f} min")
+        train_epoch_times.append(epoch_t)
 
         with torch.no_grad():
             student_model.eval()
@@ -469,6 +481,11 @@ def train(args):
     # pairwise_distances = student_model.layer_dist_accumulator / student_model.accumulator_counter
     # for i, dist in enumerate(pairwise_distances):
     #     print(f"Mean euclidean distance in feature space from layer {i} to {i+1} is: {pairwise_distances[i]}")
+            
+    # Compute train times per epoch
+    mean_train_time = np.mean(train_epoch_times)
+    std_train_time = np.std(train_epoch_times)
+    print(f"===> Mean train time per epoch = {mean_train_time:.4f} min with std = {std_train_time:.4f} min")
 
     writer.close()
 
