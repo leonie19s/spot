@@ -312,11 +312,6 @@ def train(args):
                     writer.add_scalar('TRAIN/lr_main', lr_value, global_step)
                     writer.add_scalar('TRAIN/total_norm', total_norm, global_step)
 
-        # Exclude validation run from time-keeping
-        epoch_t = (time.time() - train_epoch_start_time)/60
-        print(f"==> Epoch time: {epoch_t:.4f} min")
-        train_epoch_times.append(epoch_t)
-
         with torch.no_grad():
             model.eval()
 
@@ -446,6 +441,11 @@ def train(args):
     
             print('====> Best Loss = {:F} @ Epoch {}'.format(best_val_loss, best_epoch))
     
+        # Exclude validation run from time-keeping
+        epoch_t = (time.time() - train_epoch_start_time)/60
+        print(f"==> Epoch time: {epoch_t:.4f} min")
+        train_epoch_times.append(epoch_t)
+
     # Compute distances in feature space between layers
     # pairwise_distances = model.layer_dist_accumulator / model.accumulator_counter
     # for i, dist in enumerate(pairwise_distances):

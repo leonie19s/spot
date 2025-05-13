@@ -25,7 +25,7 @@ IGNORE_INDEX = -100
 
 
 # Set available devices here, do NOT use GPU 0 on node 20
-device_ids =[2]
+device_ids =[1]
 USE_SA_SIGNAL = True
 os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
@@ -347,11 +347,6 @@ def train(args):
                     writer.add_scalar('TRAIN/ce', ce_loss.item(), global_step)
                     writer.add_scalar('TRAIN/lr_main', lr_value, global_step)
 
-        # Exclude validation run from time-keeping
-        epoch_t = (time.time() - train_epoch_start_time)/60
-        print(f"==> Epoch time: {epoch_t:.4f} min")
-        train_epoch_times.append(epoch_t)
-
         with torch.no_grad():
             student_model.eval()
 
@@ -479,6 +474,11 @@ def train(args):
     
             print('====> Best Loss = {:F} @ Epoch {}'.format(best_val_loss, best_epoch))
     
+        # Exclude validation run from time-keeping
+        epoch_t = (time.time() - train_epoch_start_time)/60
+        print(f"==> Epoch time: {epoch_t:.4f} min")
+        train_epoch_times.append(epoch_t)
+        
     # Compute distances in feature space between layers
     # pairwise_distances = student_model.layer_dist_accumulator / student_model.accumulator_counter
     # for i, dist in enumerate(pairwise_distances):
