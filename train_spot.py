@@ -21,11 +21,13 @@ from spot import SPOT
 from ms_spot import MSSPOT
 from datasets import PascalVOC, COCO2017, MOVi
 from ocl_metrics import UnsupervisedMaskIoUMetric, ARIMetric
-from utils_spot import inv_normalize, cosine_scheduler, visualize, bool_flag, load_pretrained_encoder, reduce_dataset, check_for_nan_inf
+from utils_spot import inv_normalize, cosine_scheduler, visualize, bool_flag, load_pretrained_encoder, reduce_dataset, check_for_nan_inf, load_swin_encoder
 import models_vit
+from swin import build_swin_model
+
 
 # Set available devices here, do NOT use GPU 0 on node 20
-device_ids =[5]
+device_ids =[2]
 os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
 
@@ -167,12 +169,21 @@ def train(args):
         args.max_tokens = int((args.val_image_size/16)**2)
         encoder = models_vit.__dict__["vit_base_patch16"](num_classes=0, global_pool=False, drop_path_rate=0)
         assert args.pretrained_encoder_weights is not None
+        
         load_pretrained_encoder(encoder, args.pretrained_encoder_weights, prefix=None) 
+    elif args.which_encoder == "swin_v2":
+    
+        # TODO: what is max tokens for swin?
+        #args.max_tokens = int((args.val_image_size / 4) ** 2)
+        args.max_tokens = 49
+        encoder = build_swin_model(args.val_image_size)
+        load_swin_encoder(encoder)
+        
     else:
         raise
         
     encoder = encoder.eval()
-    
+  
     if args.use_second_encoder:
         encoder_second = copy.deepcopy(encoder).eval()
     else:

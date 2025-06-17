@@ -16,9 +16,14 @@ class MSSPOT(nn.Module):
         self.second_encoder = second_encoder
         self.encoder_final_norm = args.encoder_final_norm
         self.ms_which_encoder_layers = args.ms_which_encoder_layers
+        print(args.finetune_blocks_after)
+        print(self.encoder.named_parameters())
         for param_name, param in self.encoder.named_parameters():
             if ('blocks' in param_name):
-                block_id = int(param_name.split('.')[1])
+                if self.which_encoder == "swin_v2":
+                    block_id = int(param_name.split('.')[2])
+                else:
+                    block_id = int(param_name.split('.')[1])
                 if block_id >= args.finetune_blocks_after:
                     param.requires_grad = True  # update by gradient
                 else:
@@ -41,24 +46,40 @@ class MSSPOT(nn.Module):
             x = self.forward_encoder(x, self.encoder)
             _, num_tokens, d_model = x[-1].shape
 
+            if args.which_encoder == "swin_v2":
+                x = torch.rand(1, args.img_channels, args.image_size, args.image_size)
+                x = self.forward_encoder(x, self.encoder)
+                num_token_list = [x[i].shape[1] for i in range(len(x))]
+                d_model_list = [x[i].shape[2] for i in range(len(x))]
+
+                # Leave this for last layer due to reconstruction target
+                _, num_tokens, d_model = x[-1].shape
+
         args.d_model = d_model
 
         self.num_slots = args.num_slots
         self.d_model = args.d_model # input_channels
 
         sae_class = MultiScaleSlotAttentionEncoderShared if args.shared_weights else MultiScaleSlotAttentionEncoder
-        self.slot_attn = sae_class(
-            args.num_iterations, args.num_slots, args.d_model, args.slot_size,
-            args.mlp_hidden_size, args.pos_channels, args.truncate, args.init_method,
-            args.ms_which_encoder_layers, args.concat_method, args.val_mask_size
-        )
+        if args.which_encoder == "swin_v2":
+            self.slot_attn = sae_class(
+                            args.num_iterations, args.num_slots, d_model_list, args.slot_size,
+                            args.mlp_hidden_size, args.pos_channels, args.truncate, args.init_method,
+                            args.ms_which_encoder_layers, args.concat_method, args.val_mask_size
+                        )
+        else:
+            self.slot_attn = sae_class(
+                args.num_iterations, args.num_slots, args.d_model, args.slot_size,
+                args.mlp_hidden_size, args.pos_channels, args.truncate, args.init_method,
+                args.ms_which_encoder_layers, args.concat_method, args.val_mask_size
+            )
 
         self.input_proj = nn.Sequential(
             linear(args.d_model, args.d_model, bias=False),
             nn.LayerNorm(args.d_model),
         )
         
-        size = int(math.sqrt(num_tokens))
+        size = int(math.sqrt(num_tokens)) # For Swin: num_tokens of last layer (=reconstr target)
         standard_order = torch.arange(size**2) # This is the default "left_top"
         
         self.cappa = args.cappa
@@ -117,7 +138,7 @@ class MSSPOT(nn.Module):
         
         if self.dec_type=='transformer':
             self.dec = TransformerDecoder(
-                args.num_dec_blocks, args.max_tokens, args.d_model, args.num_heads, args.dropout, args.num_cross_heads)
+                args.num_dec_blocks, args.max_tokens, args.d_model, 8 if args.which_encoder == "swin_v2" else args.num_heads, args.dropout, 8 if args.which_encoder == "swin_v2" else args.num_cross_heads)
             if self.cappa > 0:
                 assert (self.train_permutations == 'standard') and (self.eval_permutations == 'standard')   
                 self.mask_token = nn.Parameter(torch.zeros(1, 1, args.d_model))
@@ -143,11 +164,24 @@ class MSSPOT(nn.Module):
         self.visualize_attn = args.visualize_attn
         log_folder = args.log_dir
         if self.visualize_attn:
-            os.makedirs(log_folder+os.sep+"plots", exist_ok=True)
-        self.plot_folder_name = os.path.join(log_folder+os.sep+"plots")
+           # print(log_folder)
+            os.makedirs(log_folder+os.sep+"plots4", exist_ok=True)
+        self.plot_folder_name = os.path.join(log_folder+os.sep+"plots4")
+        #self.plot_folder_name = log_folder
 
     def forward_encoder(self, x, encoder):
         encoder.eval()
+
+        
+        if self.which_encoder == "swin_v2":
+            x, features = encoder(x)
+            #print()
+            # TODO: transform features into correct shape
+            #print("swin features shape", [x.shape for x in features])
+            # reshaped_features = reshape_swin_features(features)
+            #print("reshaped swin features", [x.shape for x in reshaped_features])
+            #return reshaped_features
+            return features
 
         if self.which_encoder in ['dinov2_vitb14', 'dinov2_vits14', 'dinov2_vitb14_reg', 'dinov2_vits14_reg']:
             x = encoder.prepare_tokens_with_masks(x, None)
@@ -188,8 +222,7 @@ class MSSPOT(nn.Module):
 
         for x in ms_x_temp:
             x = x[:, offset :] # remove the [CLS] and (if they exist) registers tokens 
-            ms_x.append(x)
-        
+            ms_x.append(x) # [torch.Size([1, 196, 768]),..]
         return ms_x
 
     
@@ -331,3 +364,15 @@ class MSSPOT(nn.Module):
 
         return loss_mse, slots_attns, dec_slots_attns, slots, dec_recon, attn_logits
 
+def reshape_swin_features(features, out_dim=768):
+    reshaped = []
+    for x in features:
+        B, N, C = x.shape
+        H = W = int(N ** 0.5)
+        x = x.transpose(1, 2).reshape(B, C, H, W)
+        x = F.interpolate(x, size=(14, 14), mode='bilinear', align_corners=False)
+        x = x.flatten(2).transpose(1, 2)
+        projector = nn.Linear(x.shape[-1], out_dim).to(x.device)
+        reshaped.append(projector(x))
+    return reshaped
+    

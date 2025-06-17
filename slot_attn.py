@@ -8,7 +8,7 @@ from timm.models.layers import DropPath
 from ocl_metrics import unsupervised_mask_iou
 import matplotlib.pyplot as plt
 from matplotlib import cm
-from utils_spot import visualize_layer_attn
+from utils_spot import visualize_layer_attn, save_layer_attn_images
 from multilayer_slot_projector import DenseConnector, SimpleConnector, TransformerConnector, NormWeightConnector
 from functools import partial
 
@@ -203,12 +203,20 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
         self.val_mask_size = val_mask_size
 
         # Create the ensemble of slot attention encoders
-        self.slot_attention_encoders = nn.ModuleList([
-            SlotAttentionEncoder(
-                num_iterations, num_slots, input_channels, slot_size, mlp_hidden_size,
-                pos_channels, truncate, init_method, num_heads, drop_path
-            ) for i in range(len(ms_which_encoder_layers))
-        ])
+        if isinstance(input_channels, int):
+            self.slot_attention_encoders = nn.ModuleList([
+                SlotAttentionEncoder(
+                    num_iterations, num_slots, input_channels, slot_size, mlp_hidden_size,
+                    pos_channels, truncate, init_method, num_heads, drop_path
+                ) for i in range(len(ms_which_encoder_layers))
+            ])
+        else:
+            self.slot_attention_encoders = nn.ModuleList([
+                SlotAttentionEncoder(
+                    num_iterations, num_slots, inpch, slot_size, mlp_hidden_size,
+                    pos_channels, truncate, init_method, num_heads, drop_path
+                ) for inpch in input_channels
+            ])
         
         # Set fusion method according to provided args
         if fusion_method not in FUSION_STRING_MAPPING:
@@ -446,7 +454,18 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
             init_slots_list.append(init_slots)
             attn_logits_list.append(attn_logits)
         
-        
+        # For Swin: Resize attention maps all to size of last attention map
+        reshaped_attn = []
+        reshaped_attn_logits = []
+        for i in range(len(attn_list)):
+            reshaped = reshape_to_49(attn_list[i])
+            logits_reshaped = reshape_to_49(attn_logits_list[i])
+            reshaped_attn.append(reshaped)
+            reshaped_attn_logits.append(logits_reshaped)
+        attn_list = reshaped_attn
+        attn_logits_list = reshaped_attn_logits
+        #[print([x.shape for x in attn_logits_list])]
+       # [print([x.shape for x in slots_list])]
         # ensure slots correspond across scales
         if not self.residual:
            slots_list, attn_list, init_slots_list, attn_logits_list = self.align_slots(slots_list, attn_list, init_slots_list, attn_logits_list)
@@ -472,8 +491,10 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
 
         # Visualization of slot attention layers and fused result
         if image is not None:
-            visualize_layer_attn(attn_list, image, agg_attn, batch_index = 0, upsample_size=self.val_mask_size, iteration=self.it_counter, n_slots = slots_list[0].shape[1], mode ="distinct", save_folder=save_folder)
-            visualize_layer_attn(attn_list, image, agg_attn, batch_index = 0, upsample_size=self.val_mask_size, iteration=self.it_counter, n_slots = slots_list[0].shape[1], mode = "overlay", save_folder = save_folder)
+            #print("i am saving plots ")
+            save_layer_attn_images(save_folder, attn_list, image, agg_attn, batch_index = 10, upsample_size=960, iteration=self.it_counter, n_slots = slots_list[0].shape[1])
+            #visualize_layer_attn(attn_list, image, agg_attn, batch_index = 0, upsample_size=self.val_mask_size, iteration=self.it_counter, n_slots = slots_list[0].shape[1], mode ="distinct", save_folder=save_folder)
+           # visualize_layer_attn(attn_list, image, agg_attn, batch_index = 0, upsample_size=self.val_mask_size, iteration=self.it_counter, n_slots = slots_list[0].shape[1], mode = "overlay", save_folder = save_folder)
             self.it_counter += 1
         
         # Return results
@@ -582,3 +603,43 @@ class MultiScaleSlotAttentionEncoderShared(nn.Module):
             slots_init = self.slots_init.weight.expand(B, -1, -1).contiguous()
         
         return slots_init
+
+
+def reshape_to_49(tensor):
+    """
+    Reshapes a tensor of shape [B, N, C] where N is 784 or 196 to [B, 49, C]
+    by applying average pooling in the spatial domain.
+    Assumes N is a square number.
+    """
+    
+    i_squeezed = False
+    if len(tensor.shape) == 4:
+        i_squeezed = True
+        tensor = tensor.squeeze(1)
+    if tensor.shape[1] == 49:
+        if i_squeezed:
+            tensor = tensor.unsqueeze(1)
+        return tensor
+    B, N, C = tensor.shape
+    H = W = int(math.sqrt(N))
+    assert H * W == N, f"Input size {N} is not a square"
+    assert N in [784, 196], f"Unexpected input shape {tensor.shape}"
+
+    # Reshape to [B, H, W, C]
+    tensor = tensor.view(B, H, W, C)
+
+    if N == 784:
+        # Downsample 28x28 to 7x7
+        tensor = tensor.unfold(1, 4, 4).unfold(2, 4, 4)  # [B, 7, 7, 4, 4, C]
+    elif N == 196:
+        # Downsample 14x14 to 7x7
+        tensor = tensor.unfold(1, 2, 2).unfold(2, 2, 2)  # [B, 7, 7, 2, 2, C]
+
+    # Average over the patch dimensions
+    tensor = tensor.contiguous().view(B, 7, 7, -1, C).mean(dim=3)
+
+    # Flatten to [B, 49, C]
+    tensor = tensor.view(B, 49, C)
+    if i_squeezed:
+        tensor = tensor.unsqueeze(1)
+    return tensor

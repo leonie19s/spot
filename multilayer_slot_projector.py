@@ -54,7 +54,7 @@ class MapFusionWithLearnedWeights(nn.Module):
         
         # Normalize so weights sum to 1
         normalized_weights = torch.softmax(self.layer_weights, dim=0)
-        
+        #print(normalized_weights)
         # Apply weights to attention maps: [B, H*W, num_slots, num_layers]
         weighted_maps = stacked_maps * normalized_weights.view(1, 1, 1, -1)
         weighted_init_slots = stacked_init_slots * normalized_weights.view(1, 1, 1, -1)

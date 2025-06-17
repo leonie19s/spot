@@ -22,6 +22,8 @@ import torch.nn.functional as F
 from torch.utils.data import Subset
 from torchvision import transforms
 from torchvision.utils import draw_segmentation_masks
+from swin import build_swin_model
+from scipy import interpolate
 
 binary_structure = generate_binary_structure(2,2)
 
@@ -482,7 +484,102 @@ def interpolate_pos_embed(model, checkpoint_model):
             new_pos_embed = torch.cat((extra_tokens, pos_tokens), dim=1)
             checkpoint_model['pos_embed'] = new_pos_embed
 
+def remap_pretrained_keys_swin(model, checkpoint_model):
+    state_dict = model.state_dict()
+    
+    # Geometric interpolation when pre-trained patch size mismatch with fine-tuned patch size
+    all_keys = list(checkpoint_model.keys())
+    for key in all_keys:
+        if "relative_position_bias_table" in key:
+            relative_position_bias_table_pretrained = checkpoint_model[key]
+            relative_position_bias_table_current = state_dict[key]
+            L1, nH1 = relative_position_bias_table_pretrained.size()
+            L2, nH2 = relative_position_bias_table_current.size()
+            if nH1 != nH2:
+                print(f"Error in loading {key}, passing......")
+            else:
+                if L1 != L2:
+                    print(f"{key}: Interpolate relative_position_bias_table using geo.")
+                    src_size = int(L1 ** 0.5)
+                    dst_size = int(L2 ** 0.5)
 
+                    def geometric_progression(a, r, n):
+                        return a * (1.0 - r ** n) / (1.0 - r)
+
+                    left, right = 1.01, 1.5
+                    while right - left > 1e-6:
+                        q = (left + right) / 2.0
+                        gp = geometric_progression(1, q, src_size // 2)
+                        if gp > dst_size // 2:
+                            right = q
+                        else:
+                            left = q
+
+                    # if q > 1.090307:
+                    #     q = 1.090307
+
+                    dis = []
+                    cur = 1
+                    for i in range(src_size // 2):
+                        dis.append(cur)
+                        cur += q ** (i + 1)
+
+                    r_ids = [-_ for _ in reversed(dis)]
+
+                    x = r_ids + [0] + dis
+                    y = r_ids + [0] + dis
+
+                    t = dst_size // 2.0
+                    dx = np.arange(-t, t + 0.1, 1.0)
+                    dy = np.arange(-t, t + 0.1, 1.0)
+
+                    print("Original positions = %s" % str(x))
+                    print("Target positions = %s" % str(dx))
+
+                    all_rel_pos_bias = []
+
+                    for i in range(nH1):
+                        z = relative_position_bias_table_pretrained[:, i].view(src_size, src_size).float().numpy()
+                        f_cubic = interpolate.interp2d(x, y, z, kind='cubic')
+                        all_rel_pos_bias.append(torch.Tensor(f_cubic(dx, dy)).contiguous().view(-1, 1).to(
+                            relative_position_bias_table_pretrained.device))
+
+                    new_rel_pos_bias = torch.cat(all_rel_pos_bias, dim=-1)
+                    checkpoint_model[key] = new_rel_pos_bias
+
+    # delete relative_position_index since we always re-init it
+    relative_position_index_keys = [k for k in checkpoint_model.keys() if "relative_position_index" in k]
+    for k in relative_position_index_keys:
+        del checkpoint_model[k]
+
+    # delete relative_coords_table since we always re-init it
+    relative_coords_table_keys = [k for k in checkpoint_model.keys() if "relative_coords_table" in k]
+    for k in relative_coords_table_keys:
+        del checkpoint_model[k]
+
+    # re-map keys due to name change
+    rpe_mlp_keys = [k for k in checkpoint_model.keys() if "rpe_mlp" in k]
+    for k in rpe_mlp_keys:
+        checkpoint_model[k.replace('rpe_mlp', 'cpb_mlp')] = checkpoint_model.pop(k)
+
+    # delete attn_mask since we always re-init it
+    attn_mask_keys = [k for k in checkpoint_model.keys() if "attn_mask" in k]
+    for k in attn_mask_keys:
+        del checkpoint_model[k]
+
+    return checkpoint_model
+
+def load_swin_encoder(model):
+    checkpoint = torch.load("/visinf/home/vilab01/spot/local/swinv2_base_22k_500k.pth", map_location='cpu')
+    checkpoint_model = checkpoint['model']
+    checkpoint = remap_pretrained_keys_swin(model, checkpoint_model)
+    msg = model.load_state_dict(checkpoint_model, strict=False)
+    print(msg)
+    del checkpoint
+    torch.cuda.empty_cache()
+
+   
+    
 def load_pretrained_encoder(model, pretrained_weights, prefix=None):
     if pretrained_weights:
         checkpoint = torch.load(pretrained_weights, map_location='cpu')
@@ -561,6 +658,165 @@ def check_for_nan_inf(module, input, output):
         for idx, out in enumerate(output):
             inspect_tensor(out, f"output {idx}")
 
+def save_layer_attn_images(base_path, attn_masks_list, image, fused_mask, batch_index = 1, upsample_size=960, iteration=0, n_slots = 6, gt=None):
+
+    def create_custom_cmap(num_colors):
+        if not (6 <= num_colors <= 24):
+            raise ValueError("Number of colors must be between 6 and 24.")
+        colors_6 = [
+        "#1f77b4",  # Blue
+        "#ff7f0e",  # Orange
+        "#2ca02c",  # Green
+        "#d62728",  # Red
+        "#9467bd",  # Purple
+        "#8c564b"   # Brown
+        ]
+        if num_colors == 6:
+            return mcolors.ListedColormap(colors_6, name=f"custom_{num_colors}")
+        colors_7 = [
+        "#1f77b4",  # Blue
+        "#ff7f0e",  # Orange
+        "#2ca02c",  # Green
+        "#d62728",  # Red
+        "#9467bd",  # Purple
+        "#8c564b",  # Brown
+        "#e377c2"   # Pink
+        ]
+        if num_colors == 7:
+            return mcolors.ListedColormap(colors_7, name=f"custom_{num_colors}")
+
+        base_colors = [
+            "#1f77b4",  # Blue
+            "#ff7f0e",  # Orange
+            "#2ca02c",  # Green
+            "#d62728",  # Red
+            "#9467bd",  # Purple
+            "#8c564b",  # Brown
+            "#e377c2",  # Pink
+            "#7f7f7f",  # Gray
+            "#bcbd22",  # Lime
+            "#17becf",  # Cyan
+            "#aec7e8",  # Light Blue
+            "#ffbb78",  # Light Orange
+            "#98df8a",  # Light Green
+            "#ff9896",  # Light Red
+            "#c5b0d5",  # Light Purple
+            "#c49c94",  # Light Brown
+            "#f7b6d2",  # Light Pink
+            "#c7c7c7",  # Light Gray
+            "#dbdb8d",  # Light Lime
+            "#9edae5",  # Light Cyan
+            "#393b79",  # Dark Blue
+            "#637939",  # Dark Green
+            "#8c6d31",  # Dark Orange
+            "#843c39"   # Dark Red
+        ]
+
+        colors = base_colors[:num_colors]
+        return mcolors.ListedColormap(colors, name=f"custom_{num_colors}")
+    
+    # preprocess
+    attn_mask_list = [attn_mask[batch_index] for attn_mask in attn_masks_list]
+    h_w = int(math.sqrt(attn_mask_list[0].shape[0]))
+    attn_mask_list_bi = [attn_mask.reshape(h_w, h_w, n_slots) for attn_mask in attn_mask_list]
+    attn_mask_upsampled = [F.interpolate(
+        attn_mask.permute(2, 0, 1).unsqueeze(0), 
+        size=(upsample_size, upsample_size),  
+        mode='bilinear'
+    ).squeeze(0).permute(1, 2, 0)  for attn_mask in attn_mask_list_bi]
+    attn_masks_np = [attn_mask.clone().detach().cpu().numpy() for attn_mask in attn_mask_upsampled]
+    fused_mask = fused_mask[batch_index].reshape(h_w, h_w, n_slots)
+    fused_mask = F.interpolate(
+        fused_mask.permute(2, 0, 1).unsqueeze(0), 
+        size=(upsample_size, upsample_size),  
+        mode='bilinear'
+    ).squeeze(0).permute(1, 2, 0)
+    fused_mask = fused_mask.clone().detach().cpu().numpy()
+    image = image[batch_index].clone().detach().cpu()
+    image = inv_normalize(image)
+    image = F.interpolate(
+        image.unsqueeze(0),  # (1, 3, 224, 224)
+        size=(upsample_size, upsample_size),  # New size
+        mode='bilinear',
+        align_corners=False
+    ).squeeze(0)  # Back to (3, H, W)
+
+    # Convert from (3, H, W) → (H, W, 3) for imshow
+    image = image.permute(1, 2, 0).detach().cpu().numpy()
+    cmap = create_custom_cmap(n_slots)
+    norm = plt.Normalize(vmin=0, vmax=n_slots-1)
+
+    # Same for gt
+    if gt is not None:
+        gt = gt[batch_index].clone().detach().cpu()
+        #print(gt.shape)
+
+        gt = F.interpolate(
+            gt.unsqueeze(0),  # (1, 3, 224, 224)
+            size=(upsample_size, upsample_size),  # New size
+            mode='bilinear',
+            align_corners=False
+        ).squeeze(0)  # Back to (3, H, W)
+        
+        gt = gt.permute(1, 2, 0).detach().cpu().numpy()
+
+    attn_slot_id = [np.argmax(attn_mask, axis=-1) for attn_mask in attn_masks_np]
+    fused_mask = np.argmax(fused_mask, axis=-1)
+    os.makedirs(os.path.join(base_path, str(iteration)), exist_ok=True)
+
+    # Save every SA layer segmentation mask
+    for i, attn in enumerate(attn_slot_id):
+       # print(attn.shape)
+        fig, ax = plt.subplots()
+        ax.imshow(attn, cmap=cmap, norm = norm)
+        ax.axis('off')
+        output_path = os.path.join(base_path, str(iteration), f"sa_layer_{i}.png")
+        #print(output_path)
+        plt.savefig(output_path, format="png", bbox_inches='tight', pad_inches=0)
+        plt.close(fig) 
+    
+    # Save fused mask as well
+    fig, ax = plt.subplots()
+    ax.imshow(fused_mask, cmap=cmap, norm = norm)
+    ax.axis('off')
+    output_path = os.path.join(base_path, str(iteration), "fused_mask.png")
+    plt.savefig(output_path, format="png", bbox_inches='tight', pad_inches=0)
+    plt.close(fig) 
+
+    # Save image mask as well
+    fig, ax = plt.subplots()
+    ax.imshow(image, cmap=cmap, norm = norm)
+    ax.axis('off')
+    output_path = os.path.join(base_path, str(iteration), "image.png")
+    plt.savefig(output_path, format="png", bbox_inches='tight', pad_inches=0)
+    plt.close(fig) 
+
+    # Overlay
+    fig, ax = plt.subplots()
+    ax.imshow(image, cmap=cmap, norm = norm)
+    ax.imshow(fused_mask, cmap=cmap, norm = norm, alpha = 0.6)
+    ax.axis('off')
+    output_path = os.path.join(base_path, str(iteration), "image_mask_overlayed.png")
+    plt.savefig(output_path, format="png", bbox_inches='tight', pad_inches=0)
+    plt.close(fig) 
+
+    # Gt & gt overlay, if it is not none
+    if gt is not None:
+        fig, ax = plt.subplots()
+        ax.imshow(image, cmap=cmap, norm = norm)
+        ax.imshow(gt, cmap=cmap, norm = norm, alpha = 0.6)
+        ax.axis('off')
+        output_path = os.path.join(base_path, str(iteration), "image_gt_overlayed.png")
+        plt.savefig(output_path, format="png", bbox_inches='tight', pad_inches=0)
+        plt.close(fig) 
+
+        fig, ax = plt.subplots()
+        ax.imshow(gt, cmap=cmap, norm = norm)
+        ax.axis('off')
+        output_path = os.path.join(base_path, str(iteration), "gt.png")
+        plt.savefig(output_path, format="png", bbox_inches='tight', pad_inches=0)
+        plt.close(fig) 
+
 def visualize_layer_attn(attn_masks_list, image,  fused_mask, batch_index = 0, upsample_size=320, iteration=0, n_slots = 6, mode ="distinct", save_folder="spot/plots/default"):
     """
     attn_mask_list: torch.Size([b, 196, k]), n_scales
@@ -620,8 +876,6 @@ def visualize_layer_attn(attn_masks_list, image,  fused_mask, batch_index = 0, u
         colors = base_colors[:num_colors]
         return mcolors.ListedColormap(colors, name=f"custom_{num_colors}")
     
-    if iteration%10000 != 0:
-        return
     
     # preprocess
     attn_mask_list = [attn_mask[batch_index] for attn_mask in attn_masks_list]
@@ -648,6 +902,27 @@ def visualize_layer_attn(attn_masks_list, image,  fused_mask, batch_index = 0, u
     norm = plt.Normalize(vmin=0, vmax=n_slots-1)
 
 
+    # Create subfolder for the current iteration
+    iter_folder = os.path.join(save_folder, f"{iteration}")
+    os.makedirs(iter_folder, exist_ok=True)
+    
+    attn_slot_id = [np.argmax(attn_mask, axis=-1) for attn_mask in attn_masks_np]
+    fused_mask = np.argmax(fused_mask, axis=-1)
+    
+    # Save input image
+    input_image_path = os.path.join(iter_folder, "input_image.png")
+    plt.imsave(input_image_path, image)
+    
+    # Save each SA mask separately
+    for i, attn in enumerate(attn_slot_id):
+        sa_path = os.path.join(iter_folder, f"sa_layer_{i}.png")
+        plt.imsave(sa_path, attn, cmap=cmap, norm=norm)
+    
+    # Save fused SA mask
+    fused_mask_path = os.path.join(iter_folder, "fused_sa.png")
+    plt.imsave(fused_mask_path, fused_mask, cmap=cmap, norm=norm)
+
+    """
     if mode == "distinct":
    
         attn_slot_id = [np.argmax(attn_mask, axis=-1) for attn_mask in attn_masks_np]
@@ -669,24 +944,24 @@ def visualize_layer_attn(attn_masks_list, image,  fused_mask, batch_index = 0, u
         plt.savefig(f'{save_folder}/distinct_{iteration}.png')
         plt.close() 
     
-      
-    elif mode == "overlay":
-        fig, axs = plt.subplots(1, len(attn_masks_np) +2, figsize=(24,3))
-        attn_masks_np.append(fused_mask)
-        axs[0].imshow(image)
-        axs[0].set_title("Input image")
-        axs[0].axis('off')
-        for i, attn in enumerate(attn_masks_np):
-            slot_attn_masks = [attn[:, :, j] for j in range(attn.shape[2])] # 6x (320, 320)
-            for slot_attn in slot_attn_masks:
-                im = axs[i+1].imshow(slot_attn, cmap=cmap, alpha=0.3)
-            axs[i+1].set_title(f"SA at layer {i}")
-            axs[i+1].axis('off')  
-        axs[-1].set_title("Fused SA")
+      """
+    #elif mode == 'overlay':
+      #  fig, axs = plt.subplots(1, len(attn_masks_np) +2, figsize=(24,3))
+      #  attn_masks_np.append(fused_mask)
+      #  axs[0].imshow(image)
+      #  axs[0].set_title("Input image")
+      #  axs[0].axis('off')
+      #  for i, attn in enumerate(attn_masks_np):
+       #     slot_attn_masks = [attn[:, :, j] for j in range(attn.shape[2])] # 6x (320, 320)
+       #     for slot_attn in slot_attn_masks:
+        #        im = axs[i+1].imshow(slot_attn, cmap=cmap, alpha=0.3)
+         #   axs[i+1].set_title(f"SA at layer {i}")
+          #  axs[i+1].axis('off')  
+        #axs[-1].set_title("Fused SA")
 
-        fig.tight_layout()
-        plt.savefig(f'{save_folder}/overlay_{iteration}.png')
-        plt.close() 
+      #  fig.tight_layout()
+       # plt.savefig(f'{save_folder}/overlay_{iteration}.png')
+       #plt.close() 
 
         
     
