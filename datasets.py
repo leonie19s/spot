@@ -9,12 +9,101 @@ from PIL import Image, ImageFile
 import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
+import torchvision
 import torchvision.transforms.functional as TF
 
 from pycocotools import mask
 from pycocotools.coco import COCO
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+
+class HFPascalVOC(Dataset):
+    def __init__(self, root, split, image_size=768, mask_size = 768):
+        assert split in ['trainaug', 'val']
+        imglist_fp = os.path.join(root, 'ImageSets/Segmentation', split+'.txt')
+        
+        self.imglist = self.read_imglist(imglist_fp)
+
+        self.root = root
+   
+        self.train_transform = transforms.Compose([
+                            transforms.Resize(size=image_size, interpolation=transforms.InterpolationMode.BILINEAR),
+                            transforms.RandomCrop(image_size),
+                            transforms.RandomHorizontalFlip(p=0.5),
+                            transforms.ToTensor(),
+                            transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+                        ])
+
+        self.val_transform_image = transforms.Compose([transforms.Resize(size = image_size, interpolation=transforms.InterpolationMode.BILINEAR),
+                               transforms.CenterCrop(size = image_size),
+                               transforms.ToTensor(),
+                               transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
+
+        self.val_transform_mask = transforms.Compose([transforms.Resize(size = mask_size, interpolation=transforms.InterpolationMode.NEAREST),
+                               transforms.CenterCrop(size = mask_size),
+                               transforms.PILToTensor()])
+        self.split = split
+        self.image_size = image_size
+        self.mask_size = mask_size
+    
+   
+
+    def __getitem__(self, idx):
+
+        imgname = self.imglist[idx]
+        img_fp = os.path.join(self.root, 'JPEGImages', imgname) + '.jpg'
+        mask_fp_class = os.path.join(self.root, 'SegmentationClass', imgname) + '.png'
+        mask_fp_instance = os.path.join(self.root, 'SegmentationObject', imgname) + '.png'
+
+        img = Image.open(img_fp)
+        img = img.convert('RGB')
+        img = img.resize([self.image_size, self.image_size], Image.BILINEAR)
+        
+
+        if self.split=='trainaug':
+            img = self.train_transform(img)
+            #img = torchvision.transforms.ToTensor(img) # range [0, 1]
+            #range=(-1, 1)
+            #r_min, r_max = range[0], range[1]
+            #img = img * (r_max - r_min) + r_min # range [r_min, r_max]
+            return img
+   
+        elif self.split=='val':
+            
+            mask_class    = Image.open(mask_fp_class)
+            mask_instance = Image.open(mask_fp_instance)
+            
+            img = self.val_transform_image(img)
+            
+            
+            mask_class = self.val_transform_mask(mask_class).squeeze().long()
+            mask_class[mask_class==255]=0 # Ignore objects' boundaries
+
+            mask_instance = self.val_transform_mask(mask_instance).squeeze().long()
+            mask_instance[mask_instance==255]=0 # Ignore objects' boundaries
+            
+            ignore_mask = torch.zeros((1,self.mask_size,self.mask_size), dtype=torch.long) # There is no overlapping in VOC
+
+            return img, mask_instance, mask_class, ignore_mask
+        
+        else:
+            
+            mask_class    = Image.open(mask_fp_class)
+            mask_instance = Image.open(mask_fp_instance)
+           
+            return img, mask_instance.long(), mask_instance.squeeze()
+
+
+    def __len__(self):
+        return len(self.imglist)
+
+    def read_imglist(self, imglist_fp):
+        ll = []
+        with open(imglist_fp, 'r') as fd:
+            for line in fd:
+                ll.append(line.strip())
+        return ll
 
 
 class PascalVOC(Dataset):

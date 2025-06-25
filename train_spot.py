@@ -19,11 +19,11 @@ import torchvision.utils as vutils
 from typing import List
 from spot import SPOT
 from ms_spot import MSSPOT
-from datasets import PascalVOC, COCO2017, MOVi
+from datasets import PascalVOC, COCO2017, MOVi, HFPascalVOC
 from ocl_metrics import UnsupervisedMaskIoUMetric, ARIMetric
 from utils_spot import inv_normalize, cosine_scheduler, visualize, bool_flag, load_pretrained_encoder, reduce_dataset, check_for_nan_inf
 import models_vit
-
+from hyperfeatures import HFBackbone
 # Set available devices here, do NOT use GPU 0 on node 20
 device_ids =[5]
 os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
@@ -112,6 +112,9 @@ def train(args):
     if args.dataset == 'voc':
         train_dataset = PascalVOC(root=args.data_path, split='trainaug', image_size=args.image_size, mask_size = args.image_size)
         val_dataset = PascalVOC(root=args.data_path, split='val', image_size=args.val_image_size, mask_size = args.val_mask_size)
+    elif args.dataset == "hfvoc":
+        train_dataset = HFPascalVOC(root=args.data_path, split='trainaug', image_size=args.image_size, mask_size = args.image_size)
+        val_dataset = HFPascalVOC(root=args.data_path, split='val', image_size=args.val_image_size, mask_size = args.val_mask_size)
     elif args.dataset == 'coco':
         train_dataset = COCO2017(root=args.data_path, split='train', image_size=args.image_size, mask_size = args.image_size)
         val_dataset = COCO2017(root=args.data_path, split='val', image_size=args.val_image_size, mask_size = args.val_mask_size)
@@ -168,6 +171,12 @@ def train(args):
         encoder = models_vit.__dict__["vit_base_patch16"](num_classes=0, global_pool=False, drop_path_rate=0)
         assert args.pretrained_encoder_weights is not None
         load_pretrained_encoder(encoder, args.pretrained_encoder_weights, prefix=None) 
+    elif args.which_encoder == "hf_diffusion":
+        # TODO: set max tokens to the largest H*W 
+        # TODO: do the layer selection
+        args.max_tokens = 4096
+        encoder = HFBackbone()
+        
     else:
         raise
         
