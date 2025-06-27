@@ -25,7 +25,7 @@ from utils_spot import inv_normalize, cosine_scheduler, visualize, bool_flag, lo
 import models_vit
 from hyperfeatures import HFBackbone
 # Set available devices here, do NOT use GPU 0 on node 20
-device_ids =[5]
+device_ids =[2]
 os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
 
@@ -175,7 +175,9 @@ def train(args):
         # TODO: set max tokens to the largest H*W 
         # TODO: do the layer selection
         args.max_tokens = 4096
-        encoder = HFBackbone()
+   
+        layers =   args.ms_which_encoder_layers
+        encoder = HFBackbone(layers)
         
     else:
         raise

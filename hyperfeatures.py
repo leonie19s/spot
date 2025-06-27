@@ -86,7 +86,8 @@ class HFBackbone(nn.Module):# todo: make this module maybe?
         layer_feats = self.adapt_feats(feats, feature_dims)# layer_feats shape (B, C_total, H, W)
 
         df_features_list = self.aggregation_network(layer_feats)# Assumes batch is shape (B, C, H, W) where C is the concatentation of all layer features.
-        return df_features_list
+        selected_features = [df_features_list[i] for i in self.layers]
+        return selected_features
     
     def eval(self):
         return self

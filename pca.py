@@ -7,6 +7,7 @@ adapted from: https://github.com/ShirAmir/dino-vit-features/tree/main
 import argparse
 import random
 import PIL.Image
+from matplotlib import pyplot as plt
 import numpy
 import torch
 from pathlib import Path
@@ -36,10 +37,9 @@ def pca(features, img_batch, n_components: int = 4) -> List[Tuple[Image.Image, n
         img = img_batch[i]  # shape: [H, W]
        # img = img.unsqueeze(2)  # now [1, H, W]
         img = (img - img.min()) / (img.max() - img.min())*255
-        img_np = img.cpu().numpy()
+        img_np = img.cpu().numpy().transpose(1, 2, 0).astype(np.uint8)
         img_pil = Image.fromarray(img_np)
         img_pil_list.append(img_pil)
-    h, w = img_batch[0].shape
     pca_per_image = []
     for b in range(features.size(0)): # iterate over batch dimension
         feat = features[b]
@@ -51,6 +51,28 @@ def pca(features, img_batch, n_components: int = 4) -> List[Tuple[Image.Image, n
     results = [(pil_image, img_pca.reshape((int(np.sqrt(patch_dim))),(int(np.sqrt(patch_dim))) , n_components)) for
                (pil_image, img_pca) in zip(img_pil_list, pca_per_image)]
     return results
+
+def shared_pca(pil_image, pca_images, save_dir):
+    save_dir = Path(save_dir)
+    #save_dir.mkdir(exist_ok=True, parents=True)
+    fig, axes = plt.subplots(3, 5, figsize=(15, 9))
+    pil_image = pil_image.convert('L')
+    axes = axes.flatten()
+    axes[0].imshow(pil_image, cmap='gray')
+    axes[0].axis('off')
+    for i in range(len(pca_images)):
+        pca_image = pca_images[i]
+        comp = pca_image[:, :, -3:]
+        comp_min = comp.min(axis=(0, 1))
+        comp_max = comp.max(axis=(0, 1))
+        comp_img = (comp - comp_min) / (comp_max - comp_min)
+        axes[i + 1].imshow(comp_img)
+        axes[i + 1].set_title(f'feature layer {i+1}')
+        axes[i + 1].axis('off')
+    for j in range(13, 15):
+        axes[j].axis('off')
+    plt.tight_layout()
+    plt.savefig( save_dir / '')
 
 
 def plot_pca(pil_image: Image.Image, pca_image: numpy.ndarray, save_dir: str, last_components_rgb: bool = True,
@@ -96,22 +118,14 @@ def plot_pca(pil_image: Image.Image, pca_image: numpy.ndarray, save_dir: str, la
         pca_pil.save(comp_file_path)
 
 
-def do_pca(layerwise_features, img_batch_list):
-   
+def do_pca(layerwise_features, img_batch, counter):
+    
+    random_index_in_batch =  random.randint(0,img_batch.shape[0]-1)
+    layer_pcas = []
     for idx, feat in enumerate(layerwise_features):
-        img_batch = img_batch_list[idx]
-        random_index_in_batch =  random.randint(0,img_batch.shape[0]-1)
-        layer_dir = os.path.join(save_dir, f"layer_{idx}_b_{random_index_in_batch}" )
+        layer_dir = os.path.join(save_dir, f"{counter}_layer_{idx}_b_{random_index_in_batch}" )
         result = pca(feat, img_batch)
         img, pca_res = result[random_index_in_batch]
-        plot_pca(img, pca_res,layer_dir)
-
-
-if __name__ == "__main__":
-    B = 32
-    layer0 = torch.randn(B, 49, 1280,  dtype=torch.float32)
-    layer1 = torch.randn(B, 196, 1280,  dtype=torch.float32)
-    layer2 = torch.randn(B, 784, 640,  dtype=torch.float32)
-    layer3 = torch.randn(B, 784, 320,  dtype=torch.float32)
-    all_layers = [layer0, layer1, layer2, layer3]
-    do_pca(all_layers, all_layers)
+        layer_pcas.append(pca_res)
+        #plot_pca(img, pca_res,layer_dir)
+    shared_pca(img, layer_pcas, layer_dir)

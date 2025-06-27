@@ -1,7 +1,7 @@
-weights_path: "spot/weights/aggregation_network.pt"
+weights_path: "weights/aggregation_network.pt"
 diffusion_mode: "inversion"
 output_resolution: 64
-batch_size: 1
+batch_size: 2
 prompt: ""
 negative_prompt: ""
 guidance_scale: -1
