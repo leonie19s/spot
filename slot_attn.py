@@ -23,7 +23,8 @@ FUSION_STRING_MAPPING = {
     "residual": partial(SimpleConnector, fct=lambda x, dim: x[-1]),
     "norm_weight": NormWeightConnector,
     "denseconnector": DenseConnector,
-    "transformerconnector": TransformerConnector
+    "transformerconnector": TransformerConnector,
+    "none": partial(SimpleConnector, fct=lambda x, dim: x[-1])
 }
 
 

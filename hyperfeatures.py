@@ -81,11 +81,12 @@ class HFBackbone(nn.Module):# todo: make this module maybe?
     def forward(self, img_batch):# gevstacked?
         feature_dims = self.dims
         feats, _ = self.diffusion_extractor.forward(img_batch) # feats shape = (B, T, C_total, H, W)
-
+        b = self.config["batch_size"]
+        w = h = self.config["output_resolution"]
         # split along c_total along feature dims, then concatenate along channels, then rwrite the forward of aggregation module
-        layer_feats = self.adapt_feats(feats, feature_dims)# layer_feats shape (B, C_total, H, W)
+        #layer_feats = self.adapt_feats(feats, feature_dims)# layer_feats shape (B, C_total, H, W)
 
-        df_features_list = self.aggregation_network(layer_feats)# Assumes batch is shape (B, C, H, W) where C is the concatentation of all layer features.
+        df_features_list = self.aggregation_network(feats.float().view((b, -1, w, h)))# Assumes batch is shape (B, C, H, W) where C is the concatentation of all layer features.
         selected_features = [df_features_list[i] for i in self.layers]
         return selected_features
     
@@ -233,7 +234,7 @@ class AggregationNetwork(nn.Module):
             bottlenecked_feature = mixing_weights[i] * bottlenecked_feature
             output_features.append(bottlenecked_feature)
             #if output_feature is None:
-               # output_feature = bottlenecked_feature
+             #   output_feature = bottlenecked_feature
             #else:
                 #output_feature += bottlenecked_feature
         output_features = output_features[:len(self.feature_dims)]

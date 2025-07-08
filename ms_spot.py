@@ -8,7 +8,7 @@ import math
 from pca import do_pca
 class MSSPOT(nn.Module):
     def __init__(self, encoder, args, second_encoder=None):
-        self.counter =0
+        self.counter = 1
         super().__init__()
 
         print("--- MS SPOT USED ---")
@@ -195,7 +195,8 @@ class MSSPOT(nn.Module):
            # return [tensor.view(tensor.size(0), 384, 64, 64) for tensor in features_list]
         
             reshaped_features_list =  [tensor.transpose(1, 2) for tensor in final_features]
-            #do_pca(reshaped_features_list, x, self.counter)
+            if self.counter%100 == 0 :
+                do_pca(reshaped_features_list, x, self.counter)
             self.counter +=1
             return reshaped_features_list
         

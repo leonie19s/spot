@@ -138,6 +138,8 @@ dmypy.json
 *.out
 *.dot
 *.txt
+*.png
 
 
 local/
+weights/aggregation_network.pt
