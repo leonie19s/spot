@@ -336,19 +336,32 @@ class MSSPOT(nn.Module):
         slots, slots_attns, _ = self.slot_attn(emb_target)
         return emb_target[-1], slots, slots_attns
 
-    def forward(self, image):
+    def forward(self, image,encoded_layers=None):
         """
         image: batch_size x img_channels x H x W
         """
         
         B, _, H, W = image.size()
-        emb_input_lst = self.forward_encoder(image, self.encoder)# forward encoder returns a list!
-        with torch.no_grad():
-            if self.second_encoder is not None:
-                emb_target_lst = self.forward_encoder(image, self.second_encoder) # TODO handle second encoder as multi-scale
-            else:
-                emb_target_lst = [emb_input.clone().detach() for emb_input in emb_input_lst]
-        # emb_target shape: B, N, D ([64, 196, 768])
+        if encoded_layers is None:
+            emb_input_lst = self.forward_encoder(image, self.encoder)# forward encoder returns a list!
+            with torch.no_grad():
+                if self.second_encoder is not None:
+                    emb_target_lst = self.forward_encoder(image, self.second_encoder) # TODO handle second encoder as multi-scale
+                else:
+                    emb_target_lst = [emb_input.clone().detach() for emb_input in emb_input_lst]
+            # emb_target shape: B, N, D ([64, 196, 768])
+        else:
+            if self.ms_which_encoder_layers == [8,9,10,11]:
+                emb_target_lst = encoded_layers
+            elif any(n < 8 for n in self.ms_which_encoder_layers):
+                print("lower layers than 8 have not been cached.")
+                raise
+            else:# all layers cached but other selection
+                index_for_encoded_layers = [x-8 for x in self.ms_which_encoder_layers] # now applicable to index encoded layers
+                emb_target_lst = [encoded_layers[i] for i in index_for_encoded_layers]
+
+            
+
         emb_target = emb_target_lst[-1]
         
         # Apply the slot attention

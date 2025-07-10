@@ -19,7 +19,7 @@ import torchvision.utils as vutils
 from typing import List
 from spot import SPOT
 from ms_spot import MSSPOT
-from datasets import PascalVOC, COCO2017, MOVi, HFPascalVOC
+from datasets import PascalVOC, COCO2017, MOVi, HFPascalVOC, COCO2017CACHE
 from ocl_metrics import UnsupervisedMaskIoUMetric, ARIMetric
 from utils_spot import inv_normalize, cosine_scheduler, visualize, bool_flag, load_pretrained_encoder, reduce_dataset, check_for_nan_inf
 import models_vit
@@ -118,6 +118,10 @@ def train(args):
     elif args.dataset == 'coco':
         train_dataset = COCO2017(root=args.data_path, split='train', image_size=args.image_size, mask_size = args.image_size)
         val_dataset = COCO2017(root=args.data_path, split='val', image_size=args.val_image_size, mask_size = args.val_mask_size)
+    elif args.dataset == 'coco_vit_encoded':
+        train_dataset = COCO2017CACHE(root=args.data_path, split='train', image_size=args.image_size, mask_size = args.image_size)
+        val_dataset = COCO2017CACHE(root=args.data_path, split='val', image_size=args.val_image_size, mask_size = args.val_mask_size)
+        
     elif args.dataset == 'movi':
         train_dataset = MOVi(root=os.path.join(args.data_path, 'train'), split='train', image_size=args.image_size, mask_size = args.image_size, frames_per_clip=9, predefined_json_paths = args.predefined_movi_json_paths)
         val_dataset = MOVi(root=os.path.join(args.data_path, 'validation'), split='validation', image_size=args.val_image_size, mask_size = args.val_mask_size)
@@ -290,9 +294,10 @@ def train(args):
         train_epoch_start_time = time.time()
         model.train()
     
-        for batch, image in enumerate(train_loader):
+        for batch, (image, encoded_layers) in enumerate(train_loader):
             
             image = image.cuda()
+            encoded_layers = [layer.cuda() for layer in encoded_layers] # move encoded features to gpu
 
             global_step = epoch * train_epoch_size + batch
     
@@ -300,7 +305,7 @@ def train(args):
             lr_value = optimizer.param_groups[0]['lr']
             
             optimizer.zero_grad()
-            mse, _, _, _, _, _ = model(image)
+            mse, _, _, _, _, _ = model(image, encoded_layers)
             if make_graph:
                 print("Making graph")
                 make_dot(mse.mean(), params=dict(model.named_parameters())).render("msspotnodetach.png", format="png")
@@ -329,16 +334,17 @@ def train(args):
             val_mse = 0.
             counter = 0
     
-            for batch, (image, true_mask_i, true_mask_c, mask_ignore) in enumerate(tqdm(val_loader)):
+            for batch, (image, true_mask_i, true_mask_c, mask_ignore, encoded_layers) in enumerate(tqdm(val_loader)):
                 image = image.cuda()
                 true_mask_i = true_mask_i.cuda()
                 true_mask_c = true_mask_c.cuda()
                 mask_ignore = mask_ignore.cuda() 
-                
+                encoded_layers = [layer.cuda() for layer in encoded_layers] # move encoded features to gpu
+
                 batch_size = image.shape[0]
                 counter += batch_size
     
-                mse, default_slots_attns, dec_slots_attns, _, _, _ = model(image)
+                mse, default_slots_attns, dec_slots_attns, _, _, _ = model(image, encoded_layers)
           
                 # DINOSAUR uses as attention masks the attenton maps of the decoder
                 # over the slots, which bilinearly resizes to match the image resolution
