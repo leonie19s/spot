@@ -133,6 +133,7 @@ class PascalVOC(Dataset):
         self.split = split
         self.image_size = image_size
         self.mask_size = mask_size
+       
 
     def __getitem__(self, idx):
 
@@ -183,6 +184,107 @@ class PascalVOC(Dataset):
             for line in fd:
                 ll.append(line.strip())
         return ll
+
+
+class PascalVOCCACHE(Dataset):
+    def __init__(self, root, split, image_size=224, mask_size = 224):
+        assert split in ['trainaug', 'val']
+        imglist_fp = os.path.join(root, 'ImageSets/Segmentation', split+'.txt')
+        
+        self.imglist = self.read_imglist(imglist_fp)
+
+        self.root = root
+        self.train_transform = transforms.Compose([
+                            transforms.Resize(size=image_size, interpolation=transforms.InterpolationMode.BILINEAR),
+                            transforms.RandomCrop(image_size),
+                            transforms.RandomHorizontalFlip(p=0.5),
+                            transforms.ToTensor(),
+                            transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+                        ])
+
+        self.val_transform_image = transforms.Compose([transforms.Resize(size = image_size, interpolation=transforms.InterpolationMode.BILINEAR),
+                               transforms.CenterCrop(size = image_size),
+                               transforms.ToTensor(),
+                               transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
+
+        self.val_transform_mask = transforms.Compose([transforms.Resize(size = mask_size, interpolation=transforms.InterpolationMode.NEAREST),
+                               transforms.CenterCrop(size = mask_size),
+                               transforms.PILToTensor()])
+        self.split = split
+        self.image_size = image_size
+        self.mask_size = mask_size
+        self.train_root = "/fastdata/vilab01/voc_cache_trainaug"
+        self.val_root = "/fastdata/vilab01/voc_cache_val"
+
+    def __getitem__(self, idx):
+
+        imgname = self.imglist[idx]
+        img_fp = os.path.join(self.root, 'JPEGImages', imgname) + '.jpg'
+        mask_fp_class = os.path.join(self.root, 'SegmentationClass', imgname) + '.png'
+        mask_fp_instance = os.path.join(self.root, 'SegmentationObject', imgname) + '.png'
+
+        img = Image.open(img_fp)
+        encoded_layers = self.load_layers_for_img(imgname)
+        if self.split=='trainaug':
+            
+            img = self.train_transform(img)
+            
+            return img, encoded_layers
+   
+        elif self.split=='val':
+            
+            mask_class    = Image.open(mask_fp_class)
+            mask_instance = Image.open(mask_fp_instance)
+            
+            img = self.val_transform_image(img)
+            
+            mask_class = self.val_transform_mask(mask_class).squeeze().long()
+            mask_class[mask_class==255]=0 # Ignore objects' boundaries
+
+            mask_instance = self.val_transform_mask(mask_instance).squeeze().long()
+            mask_instance[mask_instance==255]=0 # Ignore objects' boundaries
+            
+            ignore_mask = torch.zeros((1,self.mask_size,self.mask_size), dtype=torch.long) # There is no overlapping in VOC
+
+            return img, mask_instance, mask_class, ignore_mask, encoded_layers
+        
+        else:
+            
+            mask_class    = Image.open(mask_fp_class)
+            mask_instance = Image.open(mask_fp_instance)
+            
+            return img, mask_instance.long(), mask_instance.squeeze()
+
+
+    def __len__(self):
+        return len(self.imglist)
+
+    def read_imglist(self, imglist_fp):
+        ll = []
+        with open(imglist_fp, 'r') as fd:
+            for line in fd:
+                ll.append(line.strip())
+        return ll
+    
+    def load_layers_for_img(self, img_cache_path):
+        if self.split == "trainaug":
+            path = os.path.join(self.train_root, img_cache_path)
+        elif self.split == "val":
+            path = os.path.join(self.val_root, img_cache_path)
+        else:
+            raise
+        layer_tensors = []
+
+        for entry in os.listdir(path):
+            
+            if entry.startswith("layer_"):
+            
+                pt_path = os.path.join(path, entry, "cache.pt")
+                if os.path.isfile(pt_path):
+                    tensor = torch.load(pt_path, map_location="cpu")
+                    layer_tensors.append(tensor.squeeze(0))
+        return layer_tensors
+
 
 class COCO2017CACHE(Dataset):
     NUM_CLASSES = 81
@@ -410,7 +512,7 @@ class COCO2017(Dataset):
             mask_instance = mask_instance.squeeze().long()
             mask_ignore = mask_ignore.squeeze().long()
 
-            return img, mask_instance, mask_class, mask_ignore        
+            return img, mask_instance, mask_class, mask_ignore
         elif self.split =='val':
 
             img = self.val_transform_image(img)

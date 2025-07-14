@@ -19,13 +19,13 @@ import torchvision.utils as vutils
 from typing import List
 from spot import SPOT
 from ms_spot import MSSPOT
-from datasets import PascalVOC, COCO2017, MOVi, HFPascalVOC, COCO2017CACHE
+from datasets import PascalVOC, COCO2017, MOVi, HFPascalVOC, COCO2017CACHE, PascalVOCCACHE
 from ocl_metrics import UnsupervisedMaskIoUMetric, ARIMetric
 from utils_spot import inv_normalize, cosine_scheduler, visualize, bool_flag, load_pretrained_encoder, reduce_dataset, check_for_nan_inf
 import models_vit
 from hyperfeatures import HFBackbone
 # Set available devices here, do NOT use GPU 0 on node 20
-device_ids =[2]
+device_ids =[1]
 os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
 
@@ -121,7 +121,9 @@ def train(args):
     elif args.dataset == 'coco_vit_encoded':
         train_dataset = COCO2017CACHE(root=args.data_path, split='train', image_size=args.image_size, mask_size = args.image_size)
         val_dataset = COCO2017CACHE(root=args.data_path, split='val', image_size=args.val_image_size, mask_size = args.val_mask_size)
-        
+    elif args.dataset == "voc_vit_encoded":
+        train_dataset = PascalVOCCACHE(root=args.data_path, split='trainaug', image_size=args.image_size, mask_size = args.image_size)
+        val_dataset = PascalVOCCACHE(root=args.data_path, split='val', image_size=args.val_image_size, mask_size = args.val_mask_size)
     elif args.dataset == 'movi':
         train_dataset = MOVi(root=os.path.join(args.data_path, 'train'), split='train', image_size=args.image_size, mask_size = args.image_size, frames_per_clip=9, predefined_json_paths = args.predefined_movi_json_paths)
         val_dataset = MOVi(root=os.path.join(args.data_path, 'validation'), split='validation', image_size=args.val_image_size, mask_size = args.val_mask_size)
@@ -180,7 +182,7 @@ def train(args):
         # TODO: do the layer selection
         args.max_tokens = 4096
    
-        layers =   args.ms_which_encoder_layers
+        layers =  args.ms_which_encoder_layers
         encoder = HFBackbone(layers)
         
     else:
@@ -294,11 +296,15 @@ def train(args):
         train_epoch_start_time = time.time()
         model.train()
     
-        for batch, (image, encoded_layers) in enumerate(train_loader):
-            
+        for batch, data in enumerate(train_loader):
+            encoded_layers = None
+            if args.dataset in  ["coco_vit_encoded", "voc_vit_encoded"]:
+                image, encoded_layers = data # then data is a tuple
+                encoded_layers = [layer.cuda() for layer in encoded_layers] # move encoded features to gpu
+            else:
+                image = data # otherwise just image
             image = image.cuda()
-            encoded_layers = [layer.cuda() for layer in encoded_layers] # move encoded features to gpu
-
+           
             global_step = epoch * train_epoch_size + batch
     
             optimizer.param_groups[0]['lr'] = lr_schedule[global_step]
@@ -334,12 +340,19 @@ def train(args):
             val_mse = 0.
             counter = 0
     
-            for batch, (image, true_mask_i, true_mask_c, mask_ignore, encoded_layers) in enumerate(tqdm(val_loader)):
+            for batch, data in enumerate(tqdm(val_loader)):
+                if args.dataset in  ["coco_vit_encoded", "voc_vit_encoded"]:
+                    (image, true_mask_i, true_mask_c, mask_ignore, encoded_layers) = data
+                    encoded_layers = [layer.cuda() for layer in encoded_layers] # move encoded features to gpu
+                else:
+                    (image, true_mask_i, true_mask_c, mask_ignore) = data 
+                
                 image = image.cuda()
                 true_mask_i = true_mask_i.cuda()
                 true_mask_c = true_mask_c.cuda()
                 mask_ignore = mask_ignore.cuda() 
-                encoded_layers = [layer.cuda() for layer in encoded_layers] # move encoded features to gpu
+               
+                    
 
                 batch_size = image.shape[0]
                 counter += batch_size
