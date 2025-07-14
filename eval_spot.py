@@ -4,6 +4,7 @@ import os.path
 import argparse
 import pandas as pd
 from tqdm import tqdm
+from datetime import datetime
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -18,7 +19,7 @@ import models_vit
 
 
 # Set available devices here, do NOT use GPU 0 on node 20
-device_ids =[3]
+device_ids =[1]
 os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
 parser = argparse.ArgumentParser()
@@ -66,20 +67,28 @@ parser.add_argument('--use_second_encoder',  type= bool_flag, default = True, he
 parser.add_argument('--train_permutations',  type=str, default='random', help='it is just for the initialization')
 parser.add_argument('--eval_permutations',  type=str, default='standard', help='standard, random, or all')
 
-parser.add_argument('--n_scales', type=int, default=3, help= "number of scales for the multiscale attention")
-parser.add_argument('--concat_method', type=str, default='add', help="how the multiscale attention is concatenated, choose from ['mean', 'sum']")
-parser.add_argument('--shared_weights', type=bool, default=True, help='if the weights of the slot attention encoder module are shared')
+parser.add_argument('--ms_which_encoder_layers', type=str, default="9,10,11", help= "Which block layers of the encoders are to be used for multi-scale slot attention, values as ints separated by commas with no whitespace")
+parser.add_argument('--concat_method', type=str, default='mean', help="how the multiscale attention is concatenated, choose from ['mean', 'sum', 'residual, 'max', 'denseconnector', 'transformerconnector']")
+parser.add_argument('--shared_weights', type=bool, default=False, help='if the weights of the slot attention encoder module are shared')
 parser.add_argument('--data_cut', type=float, default=1, help='factor how much of the original length of the data is used')
+parser.add_argument('--log_folder_name', type=str, default=None, help='folder to save the logs and model')
+parser.add_argument('--visualize_attn', type=bool, default=False)
     
 
 args = parser.parse_args()
 
 torch.manual_seed(args.seed)
 
+# Directly transform string of layers into proper list
+args_layers_list = list(map(int, args.ms_which_encoder_layers.split(',')))
+assert len(args_layers_list) > 0, "ms_which_encoder_layers must contain at least one integer"
+assert all(isinstance(x, int) for x in args_layers_list), "ms_which_encoder_layers must contain only integers, separated by commas"
+args.ms_which_encoder_layers = args_layers_list
+
 arg_str_list = ['{}={}'.format(k, v) for k, v in vars(args).items()]
 arg_str = '__'.join(arg_str_list)
-log_dir = os.path.join(args.log_path, os.path.basename(os.path.dirname(args.checkpoint_path)))
-os.makedirs(log_dir, exist_ok=True)
+log_dir = os.path.join(args.log_path, datetime.today().isoformat()) if args.log_folder_name is None else os.path.join(args.log_path, args.log_folder_name)
+args.log_dir = log_dir
 
 if args.dataset == 'voc':
     val_dataset = PascalVOC(root=args.data_path, split='val', image_size=args.val_image_size, mask_size = args.val_mask_size)
@@ -145,8 +154,8 @@ if args.num_cross_heads is None:
     args.num_cross_heads = args.num_heads
 
 
-# model = MSSPOT(encoder, args, encoder_second)
-model = SPOT(encoder, args, encoder_second)
+model = MSSPOT(encoder, args, encoder_second)
+# model = SPOT(encoder, args, encoder_second)
 
 checkpoint = torch.load(args.checkpoint_path, map_location='cpu')
 checkpoint['model'] = {k.replace("tf_dec.", "dec."): v for k, v in checkpoint['model'].items()} # compatibility with older runs
@@ -179,7 +188,7 @@ with torch.no_grad():
         batch_size = image.shape[0]
         counter += batch_size
 
-        mse, default_slots_attns, dec_slots_attns, _, _, _ = model(image)
+        mse, default_slots_attns, dec_slots_attns, _, _, _, _, _ = model(image)
 
         # DINOSAUR uses as attention masks the attenton maps of the decoder
         # over the slots, which bilinearly resizes to match the image resolution
@@ -239,4 +248,7 @@ with torch.no_grad():
     vis_recon = visualize(image, true_mask_c, pred_dec_mask, rgb_dec_attns, pred_default_mask, rgb_default_attns, N=32)
     grid = vutils.make_grid(vis_recon, nrow=2*args.num_slots + 4, pad_value=0.2)[:, 2:-2, 2:-2]
     grid = F.interpolate(grid.unsqueeze(1), scale_factor=args.viz_resolution_factor, mode='bilinear').squeeze() # Lower resolution
-    save_image(grid, os.path.join(log_dir,'output.png'))
+    # save_image(grid, os.path.join(log_dir,'output.png'))
+
+    if args.concat_method == "gatedfusion":
+        print(f"==> Gated weights mean: {model.slot_attn.fusion_module.get_mean_gates(True)}")

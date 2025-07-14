@@ -308,11 +308,12 @@ class MSSPOT(nn.Module):
                 emb_target_lst = [emb_input.clone().detach() for emb_input in emb_input_lst]
         # emb_target shape: B, N, D ([64, 196, 768])
         emb_target = emb_target_lst[-1]
+        # emb_target = torch.stack(emb_target_lst, dim=0).mean(dim=0) # Take mean over targets of different layers
         
         # Apply the slot attention
         plot_image = image if self.visualize_attn else None
         save_folder = self.plot_folder_name if self.visualize_attn else None
-        slots, slots_attns, init_slots, attn_logits = self.slot_attn(emb_target_lst, plot_image, save_folder)
+        slots, slots_attns, init_slots, attn_logits, layerwise_slots_attns, layerwise_attn_logits = self.slot_attn(emb_target_lst, plot_image, save_folder)
         attn_logits = attn_logits.squeeze()
         # slots shape: [B, num_slots, Ds]
         # slots_attns shape: [B, N, num_slots]
@@ -329,5 +330,5 @@ class MSSPOT(nn.Module):
         slots_attns = slots_attns.transpose(-1, -2).reshape(B, self.num_slots, H_enc, W_enc)
         dec_slots_attns = dec_slots_attns.transpose(-1, -2).reshape(B, self.num_slots, H_enc, W_enc)
 
-        return loss_mse, slots_attns, dec_slots_attns, slots, dec_recon, attn_logits
+        return loss_mse, slots_attns, dec_slots_attns, slots, dec_recon, attn_logits, layerwise_slots_attns, layerwise_attn_logits
 

@@ -1,6 +1,11 @@
+import os
+
+# Set available devices here, do NOT use GPU 0 on node 20
+device_ids =[0]
+os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
+
 import math
 import copy
-import os
 import os.path
 import argparse
 import time
@@ -23,10 +28,6 @@ from datasets import PascalVOC, COCO2017, MOVi
 from ocl_metrics import UnsupervisedMaskIoUMetric, ARIMetric
 from utils_spot import inv_normalize, cosine_scheduler, visualize, bool_flag, load_pretrained_encoder, reduce_dataset, check_for_nan_inf
 import models_vit
-
-# Set available devices here, do NOT use GPU 0 on node 20
-device_ids =[5]
-os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
 
 def get_args_parser():
@@ -289,7 +290,7 @@ def train(args):
             lr_value = optimizer.param_groups[0]['lr']
             
             optimizer.zero_grad()
-            mse, _, _, _, _, _ = model(image)
+            mse, _, _, _, _, _, _, _ = model(image)
             if make_graph:
                 print("Making graph")
                 make_dot(mse.mean(), params=dict(model.named_parameters())).render("msspotnodetach.png", format="png")
@@ -327,7 +328,7 @@ def train(args):
                 batch_size = image.shape[0]
                 counter += batch_size
     
-                mse, default_slots_attns, dec_slots_attns, _, _, _ = model(image)
+                mse, default_slots_attns, dec_slots_attns, _, _, _, _, _ = model(image)
           
                 # DINOSAUR uses as attention masks the attenton maps of the decoder
                 # over the slots, which bilinearly resizes to match the image resolution
@@ -444,6 +445,8 @@ def train(args):
         # Exclude validation run from time-keeping
         epoch_t = (time.time() - train_epoch_start_time)/60
         print(f"==> Epoch time: {epoch_t:.4f} min")
+        if args.concat_method == "gatedfusion":
+            print(f"==> Gated weights mean: {model.slot_attn.fusion_module.get_mean_gates()}")
         train_epoch_times.append(epoch_t)
 
     # Compute distances in feature space between layers

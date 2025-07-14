@@ -9,7 +9,7 @@ from ocl_metrics import unsupervised_mask_iou
 import matplotlib.pyplot as plt
 from matplotlib import cm
 from utils_spot import visualize_layer_attn
-from multilayer_slot_projector import DenseConnector, SimpleConnector, TransformerConnector, NormWeightConnector
+from multilayer_slot_projector import DenseConnector, SimpleConnector, TransformerConnector, NormWeightConnector, GatedFusion, GatedFusionSingleMLP, GatedFusionNoPooling, GatedFusionNoSoftmax
 from functools import partial
 
 
@@ -23,7 +23,12 @@ FUSION_STRING_MAPPING = {
     "residual": partial(SimpleConnector, fct=lambda x, dim: x[-1]),
     "norm_weight": NormWeightConnector,
     "denseconnector": DenseConnector,
-    "transformerconnector": TransformerConnector
+    "transformerconnector": TransformerConnector,
+    "gatedfusion": GatedFusion,
+    "gatedfusionsinglemlp": GatedFusionSingleMLP,
+    "gatedfusionnopooling": GatedFusionNoPooling,
+    "gatedfusionnosoftmax": GatedFusionNoSoftmax,
+    "none": partial(SimpleConnector, fct=lambda x, dim: x[-1]),
 }
 
 
@@ -213,7 +218,7 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
         # Set fusion method according to provided args
         if fusion_method not in FUSION_STRING_MAPPING:
             raise ValueError(f"The provided fusion {fusion_method} method does not exist!")
-        self.fusion_module = FUSION_STRING_MAPPING.get(fusion_method)(slot_size, len(ms_which_encoder_layers))
+        self.fusion_module = FUSION_STRING_MAPPING.get(fusion_method)(slot_size, len(ms_which_encoder_layers), num_slots)
 
     def align_slots(self, slots_list, attn_list, init_slots_list, attn_logits_list):
         """
@@ -477,7 +482,7 @@ class MultiScaleSlotAttentionEncoder(nn.Module):
             self.it_counter += 1
         
         # Return results
-        return agg_slots, agg_attn, agg_init_slots, agg_attn_logits
+        return agg_slots, agg_attn, agg_init_slots, agg_attn_logits, attn_list, attn_logits_list
 
       
 class MultiScaleSlotAttentionEncoderShared(nn.Module):

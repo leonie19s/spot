@@ -25,7 +25,7 @@ IGNORE_INDEX = -100
 
 
 # Set available devices here, do NOT use GPU 0 on node 20
-device_ids =[1]
+device_ids =[7]
 USE_SA_SIGNAL = True
 os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
@@ -102,6 +102,28 @@ def get_args_parser():
     parser.add_argument('--visualize_attn', type=bool, default=False)
 
     return parser
+
+
+def compute_ce_loss(teacher_mask, student_mask, student_logits, criterion):
+
+    with torch.no_grad():
+        teacher_mask = teacher_mask.argmax(1)
+        teacher_mask_onehot = torch.nn.functional.one_hot(teacher_mask, num_classes=args.num_slots).permute(0,3,1,2)
+        B, H, W = teacher_mask.size()
+
+    # Reshape logits patches to match H, W 
+    student_logits = student_logits.transpose(-1, -2).reshape(B, args.num_slots, H, W)
+
+    # One-hot student mask over slots to assign most dominant slot per patch
+    student_mask_onehot = torch.nn.functional.one_hot(student_mask.argmax(1), num_classes=args.num_slots).permute(0,3,1,2)
+
+    # Use hungarian matching to match the teacher and student masks, re-order logits accordingly
+    permutation_indices, _ = att_matching(student_mask_onehot, teacher_mask_onehot)
+    student_logits = torch.stack([x[permutation_indices[n]] for n, x in enumerate(student_logits)], dim=0)
+
+    # Compute loss between student logits and teacher mask
+    return criterion(student_logits, teacher_mask)
+
 
 def train(args):
     torch.manual_seed(args.seed)
@@ -313,26 +335,30 @@ def train(args):
             optimizer.zero_grad()
             
             with torch.no_grad():
-                _, sa_slots_attns, dec_slots_attns, _, _, _ = teacher_model(image)
+                _, sa_slots_attns, dec_slots_attns, _, _, _, teacher_layerwise_slots_attns, _ = teacher_model(image)
                 attn_signal = dec_slots_attns if not USE_SA_SIGNAL else sa_slots_attns
 
-                dec_masks = attn_signal.argmax(1)
-                dec_masks_onehot = torch.nn.functional.one_hot(dec_masks, num_classes=args.num_slots).permute(0,3,1,2)
-                B, H, W = dec_masks.size()
+            mse, slots_attns, _, _, _, logits, student_layerwise_slots_attns, student_layerwise_logits = student_model(image)
             
-            mse, slots_attns, _, _, _, logits = student_model(image)
-            
-            logits = logits.transpose(-1, -2).reshape(B, args.num_slots, H, W)
-            
-            attn_onehot = torch.nn.functional.one_hot(slots_attns.argmax(1), num_classes=args.num_slots).permute(0,3,1,2)
-            permutation_indices, _ = att_matching(attn_onehot, dec_masks_onehot)
-        
-            logits = torch.stack([x[permutation_indices[n]] for n, x in enumerate(logits)], dim=0)
-        
-            ce_loss = criterion(logits, dec_masks)
+            # NORMAL SPOT TEACHER STUDENT LOSS
+            ce_loss = compute_ce_loss(attn_signal, slots_attns, logits, criterion)
 
+            # LAYER-WISE MUFASA TEACHER STUDENT LOSS
+            """
+            ce_loss = 0
+            for teacher_mask, student_mask, student_logits in zip(teacher_layerwise_slots_attns, student_layerwise_slots_attns, student_layerwise_logits):
+                
+                # Reshape student and teacher masks to restore grid
+                B, S, H_enc, W_enc = attn_signal.shape
+                teacher_mask = teacher_mask.transpose(-1, -2).reshape(B, S, H_enc, W_enc)
+                student_mask = student_mask.transpose(-1, -2).reshape(B, S, H_enc, W_enc)
+
+                # Compute loss for this layer and add onto accumulated loss
+                ce_loss += compute_ce_loss(teacher_mask, student_mask, student_logits, criterion)
+            """
+
+            # Weigh by ce_loss and add onto reconstruction loss
             ce_weight = ce_weight_schedule[global_step]
-
             total_loss = mse + ce_weight*ce_loss
             total_loss.backward()
             clip_grad_norm_(student_model.parameters(), args.clip, 'inf')
@@ -362,7 +388,7 @@ def train(args):
                 batch_size = image.shape[0]
                 counter += batch_size
     
-                mse, default_slots_attns, dec_slots_attns, _, _, _ = student_model(image)
+                mse, default_slots_attns, dec_slots_attns, _, _, _, _, _ = student_model(image)
     
                 # DINOSAUR uses as attention masks the attenton maps of the decoder
                 # over the slots, which bilinearly resizes to match the image resolution
@@ -477,6 +503,8 @@ def train(args):
         # Exclude validation run from time-keeping
         epoch_t = (time.time() - train_epoch_start_time)/60
         print(f"==> Epoch time: {epoch_t:.4f} min")
+        if args.concat_method == "gatedfusion":
+            print(f"==> Gated weights mean: {student_model.slot_attn.fusion_module.get_mean_gates()}")
         train_epoch_times.append(epoch_t)
         
     # Compute distances in feature space between layers
