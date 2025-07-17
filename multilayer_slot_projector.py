@@ -786,3 +786,88 @@ class GatedFusionNoSoftmax(nn.Module):
         if std:
             return means,stds
         return means
+    
+
+class GatedFusionLayerWise(nn.Module):
+
+    def __init__(self, slot_dim, num_layers, num_slots):
+        super().__init__()
+        self.L = num_layers
+        
+        # Use one small MLP per layer that predicts for a given input a gate weight for every layer, disregarding the slots
+        self.gate_mlps = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(slot_dim, slot_dim//2, bias=True),
+                nn.LayerNorm(slot_dim//2),
+                nn.GELU(),
+                nn.Linear(slot_dim//2, 1, bias=True)
+            )
+            for _ in range(self.L)
+        ])
+
+        # Gate softmax temperature: T < 1 makes the distribution sharper (more “hard” selection single layer) and T > 1 makes it flatter.
+        self.softmax_temp = 2
+        
+        # Projection heads for concatenated outputs
+        self.slot_proj = nn.Linear(self.L * slot_dim, slot_dim, bias=True)
+
+        # Record epoch-wise per-layer gated weights
+        self.per_layer_weight = [[] for _ in range(self.L)]
+
+    def forward(self, slot_list, slot_att_list, init_slot_list, attn_logits_list):
+
+        # Compute a scalar gate weight for each layer, Output: List of L tensors [B, 1]
+        gate_logits = []
+        for l in range(self.L):
+            pool = slot_list[l].mean(dim=1, keepdim=True)  # Mean-pool over the slot dimension to feed into MLP: [B C] -> [B, S, 1]
+            logit = self.gate_mlps[l](pool)     
+            gate_logits.append(logit)
+
+        # Stack and softmax over the layer dimension so that gated weights sum to 1 -> [B, L]
+        # G basically gives the importance of layer l in sample b
+        G = torch.stack(gate_logits, dim=1).squeeze(-1).to(slot_list[0].device)
+        G = F.softmax(G / self.softmax_temp, dim=1)
+
+        # Apply gates to the outputs of each layer
+        gated_vecs  = []
+        gated_masks = []
+        gated_masks_logits = []
+        for l in range(self.L):
+            g = G[:, l].unsqueeze(-1)     # [B, 1]
+            self.per_layer_weight[l].append(g.detach().cpu())
+            # fuse slot vectors
+            gated_vecs.append(g * slot_list[l])    # [B, S, C]
+            # fuse slot masks (broadcast over P)
+            gated_masks.append(g.permute(0,2,1) * slot_att_list[l])
+            # fuse slot logit masks
+            gated_masks_logits.append(g.permute(0, 2, 1).unsqueeze(1) * attn_logits_list[l])
+
+
+        # Concatenate the slots across layers in channel dimension and project down to original size
+        V_cat = torch.cat(gated_vecs, dim=-1)           # [B, S, L*C]
+        S_fused = self.slot_proj(V_cat)                 # [B, S, C]
+
+        # Linear fusion of gated masks by simply summing them together instead of projection head to maintain semantics of attention map
+        A_fused = sum(gated_masks)
+        A_logits = sum(gated_masks_logits)
+
+        return S_fused, A_fused, init_slot_list[0], A_logits
+    
+    def get_mean_gates(self, std=False):
+        means = []
+        stds = []
+        for l in range(self.L):
+            per_batch_list = self.per_layer_weight[l]
+
+            # Concat along all data samples, and then collapse there
+            all_g = torch.cat(per_batch_list, dim=0)
+            means.append(all_g.mean().item())
+            stds.append(all_g.std().item())
+        
+        # Reset for this epoch to avoid RAM issues
+        self.per_layer_weight = [[] for _ in range(self.L)]
+        gc.collect()
+
+        if std:
+            return means,stds
+        return means

@@ -9,7 +9,7 @@ from ocl_metrics import unsupervised_mask_iou
 import matplotlib.pyplot as plt
 from matplotlib import cm
 from utils_spot import visualize_layer_attn
-from multilayer_slot_projector import DenseConnector, SimpleConnector, TransformerConnector, NormWeightConnector, GatedFusion, GatedFusionSingleMLP, GatedFusionNoPooling, GatedFusionNoSoftmax
+from multilayer_slot_projector import DenseConnector, SimpleConnector, TransformerConnector, NormWeightConnector, GatedFusion, GatedFusionSingleMLP, GatedFusionNoPooling, GatedFusionNoSoftmax, GatedFusionLayerWise
 from functools import partial
 
 
@@ -28,6 +28,7 @@ FUSION_STRING_MAPPING = {
     "gatedfusionsinglemlp": GatedFusionSingleMLP,
     "gatedfusionnopooling": GatedFusionNoPooling,
     "gatedfusionnosoftmax": GatedFusionNoSoftmax,
+    "gatedfusionlayerwise": GatedFusionLayerWise,
     "none": partial(SimpleConnector, fct=lambda x, dim: x[-1]),
 }
 
