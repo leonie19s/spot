@@ -143,6 +143,7 @@ class MSSPOT(nn.Module):
         self.visualize_attn = args.visualize_attn
         log_folder = args.log_dir
         if self.visualize_attn:
+            print("Visualizing attention....")
             os.makedirs(log_folder+os.sep+"plots", exist_ok=True)
         self.plot_folder_name = os.path.join(log_folder+os.sep+"plots")
 

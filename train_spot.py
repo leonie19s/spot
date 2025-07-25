@@ -1,7 +1,7 @@
 import os
 
 # Set available devices here, do NOT use GPU 0 on node 20
-device_ids =[0]
+device_ids =[4]
 os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
 import math
@@ -87,10 +87,10 @@ def get_args_parser():
 
     parser.add_argument('--ms_which_encoder_layers', type=str, default="9,10,11", help= "Which block layers of the encoders are to be used for multi-scale slot attention, values as ints separated by commas with no whitespace")
     parser.add_argument('--concat_method', type=str, default='mean', help="how the multiscale attention is concatenated, choose from ['mean', 'sum', 'residual, 'max', 'denseconnector', 'transformerconnector']")
-    parser.add_argument('--shared_weights', type=bool, default=False, help='if the weights of the slot attention encoder module are shared')
+    parser.add_argument('--shared_weights', type=bool_flag, default=False, help='if the weights of the slot attention encoder module are shared')
     parser.add_argument('--data_cut', type=float, default=1, help='factor how much of the original length of the data is used')
     parser.add_argument('--log_folder_name', type=str, default=None, help='folder to save the logs and model')
-    parser.add_argument('--visualize_attn', type=bool, default=False)
+    parser.add_argument('--visualize_attn', type=bool_flag, default=False)
     return parser
 
 
@@ -449,15 +449,16 @@ def train(args):
             print(f"==> Gated weights mean: {model.slot_attn.fusion_module.get_mean_gates()}")
         train_epoch_times.append(epoch_t)
 
+        mean_train_time = np.mean(train_epoch_times)
+        std_train_time = np.std(train_epoch_times)
+        print(f"==> Mean train time per epoch = {mean_train_time:.4f} min with std = {std_train_time:.4f} min")
+
     # Compute distances in feature space between layers
     # pairwise_distances = model.layer_dist_accumulator / model.accumulator_counter
     # for i, dist in enumerate(pairwise_distances):
     #     print(f"Mean euclidean distance in feature space from layer {i} to {i+1} is: {pairwise_distances[i]}")
             
     # Compute train times per epoch
-    mean_train_time = np.mean(train_epoch_times)
-    std_train_time = np.std(train_epoch_times)
-    print(f"===> Mean train time per epoch = {mean_train_time:.4f} min with std = {std_train_time:.4f} min")
     writer.close()
 
 if __name__ == '__main__':

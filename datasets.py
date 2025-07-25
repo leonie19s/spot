@@ -19,7 +19,7 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 class PascalVOC(Dataset):
     def __init__(self, root, split, image_size=224, mask_size = 224):
-        assert split in ['trainaug', 'val', "single", "few", "some", "many"]
+        assert split in ['trainaug', 'val', "single", "few", "some", "many", "few_coarse", "many_coarse", "single_val", "few_val", "some_val", "many_val"]
         imglist_fp = os.path.join(root, 'ImageSets/Segmentation', split+'.txt')
         
         self.imglist = self.read_imglist(imglist_fp)
@@ -60,7 +60,9 @@ class PascalVOC(Dataset):
             
             return img
    
-        elif self.split=='val' or self.split in ["single", "few", "some", "many"]:
+        elif self.split=='val' or self.split in [
+            "single", "few", "some", "many", "few_coarse", "many_coarse", "single_val", "few_val", "some_val", "many_val"
+        ]:
             
             mask_class    = Image.open(mask_fp_class)
             mask_instance = Image.open(mask_fp_instance)

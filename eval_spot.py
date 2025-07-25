@@ -19,7 +19,7 @@ import models_vit
 
 
 # Set available devices here, do NOT use GPU 0 on node 20
-device_ids =[1]
+device_ids =[7]
 os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
 parser = argparse.ArgumentParser()

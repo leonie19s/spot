@@ -1,9 +1,8 @@
 import os
 
 # Set available devices here, do NOT use GPU 0 on node 20
-device_ids =[7]
+device_ids =[0]
 os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
-
 
 import copy
 import os.path
@@ -18,75 +17,11 @@ import torchvision.utils as vutils
 from torchvision.utils import save_image
 from spot import SPOT
 from ms_spot import MSSPOT
-from datasets import PascalVOC
+from datasets import PascalVOC, COCO2017, MOVi
 from ocl_metrics import UnsupervisedMaskIoUMetric, ARIMetric
 from utils_spot import inv_normalize, visualize, bool_flag, reduce_dataset
 import models_vit
-import matplotlib.pyplot as plt
 
-
-def plotting_later_analysis():
-
-    single = [0.6147210597991943, 0.2322993278503418, 0.08499794453382492, 0.06798166781663895]
-    few = [0.6353044509887695, 0.22225765883922577, 0.08019126951694489, 0.06224660947918892]
-    some = [0.6485604643821716, 0.21646356582641602, 0.07689111679792404, 0.058084893971681595]
-    many = [0.6499180197715759, 0.21554143726825714, 0.0779801681637764, 0.0565604530274868]
-    concat = [single, few, some, many]
-
-    layer0 = [x[0] for x in concat]
-    layer1 = [x[1] for x in concat]
-    layer2 = [x[2] for x in concat]
-    layer3 = [x[3] for x in concat]
-    all_other_layers = [x[1] + x[2] + x[3] for x in concat]
-
-    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(12, 5))
-    axes[0].plot(layer0, label="Earliest layer")
-    axes[1].plot(all_other_layers, label="Layer laters")
-    axes[0].set_xticks(ticks=[0, 1, 2, 3], labels=["x = 1", "2 <= x <= 3", "4 <= x <= 6", "x >= 7"])
-    axes[1].set_xticks(ticks=[0, 1, 2, 3], labels=["x = 1", "2 <= x <= 3", "4 <= x <= 6", "x >= 7"])
-    axes[0].set_xlabel("Number of objects in scene")
-    axes[0].set_ylabel("Mean gated weights")
-    axes[1].set_xlabel("Number of objects in scene")
-    axes[0].set_title("Layer 9")
-    axes[1].set_title("Layer 10+11+12")
-    plt.savefig("iccv_logs/voc_obj_count_eval/early_vs_later_layers.png")
-
-    """
-    plt.plot(layer0, label="Layer 9")
-    plt.plot(layer1, label="Layer 10")
-    plt.plot(layer2, label="Layer 11")
-    plt.plot(layer3, label="Layer 12")
-    plt.xticks(ticks=[0, 1, 2, 3], labels=["x = 1", "2 <= x <= 3", "4 <= x <= 6", "x >= 7"])
-
-    plt.xlabel("Number of objects in scene")
-    plt.ylabel("Mean gated weights per layer")
-    plt.savefig("iccv_logs/voc_obj_count_eval/alllayersinone.png")
-    """
-
-    layers = [layer0, layer1, layer2, layer3]
-    labels = ["Layer 9", "Layer 10", "Layer 11", "Layer 12"]
-    xtick_positions = [0, 1, 2, 3]
-    xtick_labels = ["x = 1", "2 <= x <= 3", "4 <= x <= 6", "x >= 7"]
-
-    fig, axes = plt.subplots(nrows=2, ncols=2, figsize=(10, 6), sharex=True)
-    axes = axes.flatten()
-
-    for i in range(4):
-        ax = axes[i]
-        ax.plot(layers[i])
-        ax.set_title(labels[i])
-        ax.set_ylabel("Mean gated weights")
-        ax.set_xticks(xtick_positions)
-        ax.set_xticklabels(xtick_labels)
-
-    # Label only bottom row x-axis
-    for ax in axes[2:]:
-        ax.set_xlabel("Number of objects in scene")
-
-    # fig.suptitle("Layer-wise Gated Weight Analysis", fontsize=14)
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-
-    plt.savefig("iccv_logs/voc_obj_count_eval/layerwise.png")
 
 """ 
     computes the BF (Boundary F1) contour matching score between the predicted and GT segmentation 
@@ -115,13 +50,16 @@ def calc_precision_recall(contours_a, contours_b, threshold):
 
     return precision_recall, top_count, len(y)
 
-def bfscore(gtfile, prfile, threshold=2):
 
-    gt__ = cv2.imread(gtfile)    # Read GT segmentation
-    gt_ = cv2.cvtColor(gt__, cv2.COLOR_BGR2GRAY)    # Convert color space
+def bfscore(gt_mask, pred_mask, threshold=2):
 
-    pr_ = cv2.imread(prfile)    # Read predicted segmentation
-    pr_ = cv2.cvtColor(pr_, cv2.COLOR_BGR2GRAY)    # Convert color space
+    # gt__ = cv2.imread(gtfile)    # Read GT segmentation
+    # gt_ = cv2.cvtColor(gt__, cv2.COLOR_BGR2GRAY)    # Convert color space
+    gt_ = gt_mask.detach().cpu().numpy().astype(np.uint8) # convert to numpy
+    
+    # pr_ = cv2.imread(prfile)    # Read predicted segmentation
+    # pr_ = cv2.cvtColor(pr_, cv2.COLOR_BGR2GRAY)    # Convert color space
+    pr_ = pred_mask.detach().cpu().numpy().astype(np.uint8)
 
     classes_gt = np.unique(gt_)    # Get GT classes
     classes_pr = np.unique(pr_)    # Get predicted classes
@@ -138,7 +76,7 @@ def bfscore(gtfile, prfile, threshold=2):
         print('Classes :', classes_gt)
         classes = classes_gt    # Get matched classes
 
-    m = np.max(classes)    # Get max of classes (number of classes)
+    m = len(classes)   # Get max of classes (number of classes)
     # Define bfscore variable (initialized with zeros)
     bfscores = np.zeros((m+1), dtype=float)
     areas_gt = np.zeros((m + 1), dtype=float)
@@ -157,12 +95,8 @@ def bfscore(gtfile, prfile, threshold=2):
         # print(gt.shape)
 
         # contours는 point의 list형태.
-        if major == '3':    # For opencv version 3.x
-            _, contours, _ = cv2.findContours(
-                gt, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)    # Find contours of the shape
-        else:    # For other opencv versions
-            contours, _ = cv2.findContours(
-                gt, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)  # Find contours of the shape
+        contours, _ = cv2.findContours(
+            gt, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)  # Find contours of the shape
 
         # contours 는 list of numpy arrays
         contours_gt = []
@@ -213,6 +147,7 @@ def bfscore(gtfile, prfile, threshold=2):
 
     # return bfscores[1:], np.sum(bfscores[1:])/len(classes[1:])    # Return bfscores, except for background, and per image score
     return bfscores[1:], areas_gt[1:]    # Return bfscores, except for background
+
 
 class FusionModuleHook:
     def __init__(self, module):
@@ -308,9 +243,6 @@ parser.add_argument('--shared_weights', type=bool, default=False, help='if the w
 parser.add_argument('--data_cut', type=float, default=1, help='factor how much of the original length of the data is used')
 parser.add_argument('--log_folder_name', type=str, default=None, help='folder to save the logs and model')
 parser.add_argument('--visualize_attn', type=bool, default=False)  
-parser.add_argument('--voc_split', type=str, default='many', help='choose from [single, few, some, many]')
-parser.add_argument('--use_original_spot_model', type=bool_flag, default=False, help='whether to use the original model architecture')
-
 
 args = parser.parse_args()
 
@@ -327,7 +259,12 @@ arg_str = '__'.join(arg_str_list)
 log_dir = os.path.join(args.log_path, datetime.today().isoformat()) if args.log_folder_name is None else os.path.join(args.log_path, args.log_folder_name)
 args.log_dir = log_dir
 
-val_dataset = PascalVOC(root=args.data_path, split=args.voc_split, image_size=args.val_image_size, mask_size = args.val_mask_size)
+if args.dataset == 'voc':
+    val_dataset = PascalVOC(root=args.data_path, split='val', image_size=args.val_image_size, mask_size = args.val_mask_size)
+elif args.dataset == 'coco':
+    val_dataset = COCO2017(root=args.data_path, split='val', image_size=args.val_image_size, mask_size = args.val_mask_size)
+elif args.dataset == 'movi':
+    val_dataset = MOVi(root=os.path.join(args.data_path, 'validation'), split='validation', image_size=args.val_image_size, mask_size = args.val_mask_size)
 
 args.max_tokens = int((args.val_image_size/16)**2)
 
@@ -379,10 +316,9 @@ else:
 if args.num_cross_heads is None:
     args.num_cross_heads = args.num_heads
 
-if args.use_original_spot_model:
-    model = SPOT(encoder, args, encoder_second)
-else:
-    model = MSSPOT(encoder, args, encoder_second)
+
+model = MSSPOT(encoder, args, encoder_second)
+# model = SPOT(encoder, args, encoder_second)
 
 checkpoint = torch.load(args.checkpoint_path, map_location='cpu')
 checkpoint['model'] = {k.replace("tf_dec.", "dec."): v for k, v in checkpoint['model'].items()} # compatibility with older runs
@@ -403,6 +339,7 @@ MBO_i_slot_metric = UnsupervisedMaskIoUMetric(matching="best_overlap", ignore_ba
 miou_slot_metric = UnsupervisedMaskIoUMetric(matching="hungarian", ignore_background = True, ignore_overlaps = True).cuda()
 ari_slot_metric = ARIMetric(foreground = True, ignore_overlaps = True).cuda()
 
+example_img_path = "/fastdata/vilab01/COCO2017/val2017/000000397133.jpg"
 with torch.no_grad():
     model.eval()
 
@@ -420,10 +357,7 @@ with torch.no_grad():
         batch_size = image.shape[0]
         counter += batch_size
 
-        if args.use_original_spot_model:
-            mse, default_slots_attns, dec_slots_attns, _, _, _ = model(image)
-        else:
-            mse, default_slots_attns, dec_slots_attns, _, _, _, _, _ = model(image)
+        mse, default_slots_attns, dec_slots_attns, _, _, _, _, _ = model(image)
 
         # Retrieve slots and fused slots from hook
         # slot_list, fused_slots = fusion_hook()
@@ -463,6 +397,11 @@ with torch.no_grad():
         miou_slot_metric.update(pred_default_mask_reshaped, true_mask_i_reshaped, mask_ignore)
         ari_slot_metric.update(pred_default_mask_reshaped, true_mask_i_reshaped, mask_ignore)
 
+        # Boundary F1 metric
+        for i in range(batch_size):
+            prediction_mask = pred_default_mask_reshaped[i] # Shape: num_slots, H, W
+            ground_truth_mask = true_mask_i_reshaped[i] # Shape: num_classes (27 bei COCO), H, W
+
     val_mse /= (val_epoch_size)
     ari = 100 * ari_metric.compute()
     ari_slot = 100 * ari_slot_metric.compute()
@@ -489,5 +428,5 @@ with torch.no_grad():
     if args.concat_method == "gatedfusion":
         print(f"==> Gated weights mean: {model.slot_attn.fusion_module.get_mean_gates()}")
     
-    plotting_later_analysis()
+
 

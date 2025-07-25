@@ -27,6 +27,171 @@ class MapFusionSimple():
         return fused_attn, fused_init_slots, fused_attn_logits
 
 
+class GatedMaskFusion(nn.Module):
+    """
+        Module for fusing the attention maps, init slots and logits together through gated fusion,
+        where the fused slot representation is fed through a one-hidden-MLP to obtain weights
+        assigning importance to each individual layer (or layer pair), with normalized contributions across layers.
+    """
+
+    def __init__(self, num_image_patches, num_layers, slot_dim):
+        super().__init__()
+        self.L = num_layers
+        self.slot_dim = slot_dim
+
+        # Gate MLP that predicts fusion weights ("importance") for the slot attention mask of each layer
+        self.gate_mlp = nn.Sequential(
+            nn.Linear(slot_dim, slot_dim//2, bias=True),
+            nn.LayerNorm(slot_dim//2),
+            nn.GELU(),
+            nn.Linear(slot_dim//2, self.L, bias=True)
+        )
+
+        # Record epoch-wise per-layer gated weights
+        self.per_layer_weight = [[] for _ in range(self.L)]
+
+    def forward(self, fused_slots, slot_list, slot_att_list, init_slot_list, attn_logits_list):
+        """
+            fused_slots: Final fused slot [B, num_slots, slot_dim]
+            slot_list: List of slots [B, num_slots, slot_dim], e.g. VOC [64, 6, 256] with len = num_layers
+            slot_att_list: List of slot attention maps [B, H_emb * W_emb, num_slots], e.g. VOC [64, 196, 6] with len = num_layers
+            init_slot_list: List of slot initializations [B, num_slots, slot_dim] with len = num_layers
+            attn_logits_list: List of attention logits [B, 1, H_emb * W_emb, num_slots]) with len = num_layers
+        """
+        
+        # Compute a scalar gate weight for each slot over the layers, i.e. that weighs each slot s_0 .. s_slots across layers 0, ..., L
+        gate_logits = self.gate_mlp(fused_slots).to(slot_list[0].device) # Stack to [B, S, L], obtain logits of [B, S, L]
+        G = F.softmax(gate_logits, dim=2)
+
+        # TODO / IDEAS:
+        #   1. Mean Pooling as before, and use 1 -> 32 -> 1 layer setup
+        #   2. Use individual slots and one gate mlp per layer again 
+        #       (cannot directly see use here, as we want information of fusion to be conveyed here)
+        #       (OR it is useful, as now Gate MLP depends on the M-Fusion MLP, thus being harder to train)
+
+        # Apply gates to the outputs of each layer
+        gated_masks = []
+        gated_masks_logits = []
+        for l in range(self.L):
+
+            # Get gated weights and put into proper shape
+            g = G[:, :, l].unsqueeze(-1)     # [B, S, 1]
+            self.per_layer_weight[l].append(g.detach().cpu())
+
+            # fuse slot masks (broadcast over P)
+            gated_masks.append(g.permute(0,2,1) * slot_att_list[l])
+
+            # fuse slot logit masks
+            gated_masks_logits.append(g.permute(0, 2, 1).unsqueeze(1) * attn_logits_list[l])
+
+        # Linear fusion of gated masks by simply summing together after weighting
+        A_fused = sum(gated_masks)
+        A_init_slots = init_slot_list[0] # TODO do this as well, even though they are never used
+        A_logits = sum(gated_masks_logits)
+
+        return A_fused, A_init_slots, A_logits
+
+
+class GatedMFusion(nn.Module):
+    """
+        Performs M-Fusion, but also has gate MLPs as in GatedFusion to weigh each sample first, the
+        gate weights are then used to fuse the attention maps as well. The gate MLPs are then trained
+        due to being included in the reconstruction pipeline.
+    """
+
+    def __init__(self, slot_dim, num_layers, num_slots, dc_type="dense", mlp_depth=1):
+        super().__init__()
+
+        # Properly parse type
+        if dc_type == "dense":
+            self.dense = True
+        elif dc_type == "sparse":
+            self.dense = False
+        else:
+            raise ValueError(f"The DenseConnector integration type has to be 'sparse' or 'dense', but got {dc_type}")
+        
+        # Store parameters
+        self.num_layers = num_layers - (1 if self.dense else 0)
+        self.hidden_size = slot_dim * 3     # In accordance to hidden_size * 3
+        self.mlp_depth = mlp_depth
+
+        # Init MLP for channel integration
+        modules = [nn.Linear(slot_dim * self.num_layers, self.hidden_size)]
+        for _ in range(1, mlp_depth):
+            modules.append(nn.GELU())
+            modules.append(nn.Linear(self.hidden_size, self.hidden_size))
+        modules.append(nn.GELU())
+        modules.append(nn.Linear(self.hidden_size, slot_dim))
+        # modules.append(nn.LayerNorm(slot_dim))
+        self.mlp = nn.Sequential(*modules)
+
+        # Small gate MLP per layer that predicts for a given input a gate weight for each slot for every layer
+        self.gate_mlps = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(1, 32, bias=True), # nn.Linear(slot_dim, slot_dim//2, bias=True),
+                nn.LayerNorm(32), # nn.LayerNorm(slot_dim//2),
+                nn.GELU(),
+                nn.Linear(32, 1, bias=True) #nn.Linear(slot_dim//2, 1, bias=True)
+            )
+            for _ in range(self.num_layers)
+        ])
+
+        # Record epoch-wise per-layer gated weights
+        self.per_layer_weight = [[] for _ in range(self.num_layers)]
+
+    def forward(self, slot_list, slot_att_list, init_slot_list, attn_logits_list):
+        """
+            slot_list: List of slots [B, num_slots, slot_dim], e.g. VOC [64, 6, 256] with len = num_layers
+            slot_att_list: List of slot attention maps [B, H_emb * W_emb, num_slots], e.g. VOC [64, 196, 6] with len = num_layers
+            init_slot_list: List of slot initializations [B, num_slots, slot_dim] with len = num_layers
+            attn_logits_list: List of attention logits [B, 1, H_emb * W_emb, num_slots]) with len = num_layers
+        """
+        
+        # Add pair-wise [x_i + x_(i+1)] to concat list if we have dense integration, for all lists
+        if self.dense:
+            slot_list = [(slot_list[i] + slot_list[i + 1]) / 2 for i in range(self.num_layers)]
+            slot_att_list = [(slot_att_list[i] + slot_att_list[i + 1]) / 2 for i in range(self.num_layers)]
+            init_slot_list = [(init_slot_list[i] + init_slot_list[i + 1]) / 2 for i in range(self.num_layers)]
+            attn_logits_list = [(attn_logits_list[i] + attn_logits_list[i + 1]) / 2 for i in range(self.num_layers)]
+
+        # Obtain gated weights for each slot over the layers, i.e. that weighs each slot s_0 .. s_slots across layers 0, ..., L
+        gate_logits = [] # List of L tensors [B, S, 1]
+        for l in range(self.num_layers):
+            # Gating with mean-pooling over slot channel dim ([B, S, C] -> [B, S, 1]), feed into MLP
+            pool = slot_list[l].mean(dim=-1, keepdim=True) 
+            logit = self.gate_mlps[l](pool)     
+            gate_logits.append(logit)
+
+        # Stack and softmax over the layer dimension so that gated weights sum to 1 -> [B, S, L]
+        # G basically gives the importance of layer l for slot s in sample b
+        G = torch.stack(gate_logits, dim=2).squeeze(-1).to(slot_list[0].device)
+        G = F.softmax(G, dim=2)
+
+        # Scale each slot, slot attention mask, mask logits with the logits
+        gated_slots  = []
+        gated_masks = []
+        gated_masks_logits = []
+        for l in range(self.num_layers):
+            g = G[:, :, l].unsqueeze(-1)     # [B, S, 1]
+            self.per_layer_weight[l].append(g.detach().cpu())
+            gated_slots.append(g * slot_list[l])    # Fuse slot vectors [B, S, C]
+            gated_masks.append(g.permute(0,2,1) * slot_att_list[l]) # Fuse slot masks [B, P, S]
+            gated_masks_logits.append(g.permute(0, 2, 1).unsqueeze(1) * attn_logits_list[l]) # Fuse logits as well
+
+        # Concat along feature dimension to [B, num_slots, slot_dim * num_layers (num_layers - 1 if dense)]
+        concat = torch.concat(gated_slots, dim=-1)
+
+        # Project concat down to original shape [B, num_slots, slot_dim]
+        fused_slots = self.mlp(concat)
+
+        # Fuse attention maps, init_slots and logits according to gating weights
+        fused_attn = sum(gated_masks)
+        fused_inits = init_slot_list[0] # TODO do this as well, even though they are never used
+        fused_logits = sum(gated_masks_logits)
+
+        return fused_slots, fused_attn, fused_inits, fused_logits 
+
+
 class MapFusionWithLearnedWeights(nn.Module):
     """
         Module for fusing the attention maps, init slots and logits together through a linear combination
@@ -321,6 +486,7 @@ class DenseConnector(nn.Module):
         self.mlp = nn.Sequential(*modules)
 
         # For attention map, init slot and attn logits fusion
+        # self.map_fuser = GatedMaskFusion(196, self.num_layers, slot_dim)
         self.map_fuser = MapFusionWithLearnedWeights(196, self.num_layers)
         # self.map_fuser = MapFusionWithLearnedWeights(196, self.num_layers + self.num_layers - 1)
 
