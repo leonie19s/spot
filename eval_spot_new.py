@@ -19,7 +19,7 @@ import models_vit
 
 
 # Set available devices here, do NOT use GPU 0 on node 20
-device_ids =[1]
+device_ids =[7]
 os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
 parser = argparse.ArgumentParser()
@@ -157,13 +157,13 @@ if args.num_cross_heads is None:
 
 model = MSSPOT(encoder, args, encoder_second)
 #model = SPOT(encoder, args, encoder_second)
-#os.makedirs(os.path.join(args.log_dir, "qualitatives"), exist_ok=True)
-#plot_folder_name = os.path.join(args.log_dir, "qualitatives")
+os.makedirs(os.path.join(args.log_dir, "qualitatives"), exist_ok=True)
+plot_folder_name = os.path.join(args.log_dir, "qualitatives")
 
 checkpoint = torch.load(args.checkpoint_path, map_location='cpu')
 checkpoint['model'] = {k.replace("tf_dec.", "dec."): v for k, v in checkpoint['model'].items()} # compatibility with older runs
 model.load_state_dict(checkpoint['model'], strict = True)
-
+#model.load_state_dict(checkpoint, strict = True)
 model = model.cuda()
 
 MBO_c_metric = UnsupervisedMaskIoUMetric(matching="best_overlap", ignore_background = True, ignore_overlaps = True).cuda()
@@ -266,7 +266,7 @@ with torch.no_grad():
         print(df_results.to_string())
     
     # For plotting
-    """
+    
     image = inv_normalize(image)
     image = F.interpolate(image, size=args.val_mask_size, mode='bilinear')
     rgb_default_attns = image.unsqueeze(1) * default_attns + 1. - default_attns
@@ -276,5 +276,5 @@ with torch.no_grad():
     grid = vutils.make_grid(vis_recon, nrow=2*args.num_slots + 4, pad_value=0.2)[:, 2:-2, 2:-2]
     grid = F.interpolate(grid.unsqueeze(1), scale_factor=args.viz_resolution_factor, mode='bilinear').squeeze() # Lower resolution
     save_image(grid, os.path.join(log_dir,'output.png'))
-    """
+    
 

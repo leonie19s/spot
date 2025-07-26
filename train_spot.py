@@ -25,7 +25,7 @@ from utils_spot import inv_normalize, cosine_scheduler, visualize, bool_flag, lo
 import models_vit
 from hyperfeatures import HFBackbone
 # Set available devices here, do NOT use GPU 0 on node 20
-device_ids =[1]
+device_ids =[7]
 os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
 
@@ -424,7 +424,8 @@ def train(args):
             ari_slot_metric.reset()
             miou_slot_metric.reset()
             
-            if (val_loss < best_val_loss) or (best_val_ari > ari) or (best_mbo_c > mbo_c):
+            #if (val_loss < best_val_loss) or (best_val_ari > ari) or (best_mbo_c > mbo_c):
+            if best_mbo_i_slot < mbo_i_slot :
                 best_val_loss = val_loss
                 best_val_ari = ari
                 best_val_ari_slot = ari_slot
@@ -435,9 +436,9 @@ def train(args):
                 best_mbo_i_slot = mbo_i_slot
                 best_miou_slot = miou_slot
                 best_epoch = epoch + 1
-    
-                #torch.save(model.state_dict(), os.path.join(log_dir, 'best_model.pt'))
-                
+                print(f"saving model for mbo_i_slots {mbo_i_slot}")
+                torch.save(model.state_dict(), os.path.join(log_dir, 'best_model.pt'))
+               
             if epoch%visualize_per_epoch==0 or epoch==args.epochs-1:
                 image = inv_normalize(image)
                 image = F.interpolate(image, size=args.val_mask_size, mode='bilinear')
