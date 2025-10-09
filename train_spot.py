@@ -25,7 +25,7 @@ from utils_spot import inv_normalize, cosine_scheduler, visualize, bool_flag, lo
 import models_vit
 from hyperfeatures import HFBackbone
 # Set available devices here, do NOT use GPU 0 on node 20
-device_ids =[7]
+device_ids =[1]
 os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
 
