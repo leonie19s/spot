@@ -5,19 +5,19 @@ from datetime import datetime
 model_configs = [
     {
         "checkpoint_path": "/fastdata/vilab01/single_layer_voc/checkpoint.pt.tar",
-        "ms_which_encoder_layers": "0"
+        "ms_which_encoder_layers": "8,11"
     },
     {
         "checkpoint_path": "/fastdata/vilab01/single_layer_voc/layer_1_dinosaur/checkpoint.pt.tar",
-        "ms_which_encoder_layers": "1"
+        "ms_which_encoder_layers": "8,10,11"
     },
     {
         "checkpoint_path": "/fastdata/vilab01/single_layer_voc/layer_2_dinosaur/checkpoint.pt.tar",
-        "ms_which_encoder_layers": "2"
+        "ms_which_encoder_layers": "8,9,11"
     },
     {
         "checkpoint_path": "/fastdata/vilab01/single_layer_voc/layer_3_dinosaur/checkpoint.pt.tar",
-        "ms_which_encoder_layers": "3"
+        "ms_which_encoder_layers": "9,11"
     },
     {
         "checkpoint_path": "/fastdata/vilab01/single_layer_voc/layer_4_dinosaur/checkpoint.pt.tar",
