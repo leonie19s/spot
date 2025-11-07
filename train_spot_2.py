@@ -25,7 +25,7 @@ IGNORE_INDEX = -100
 
 
 # Set available devices here, do NOT use GPU 0 on node 20
-device_ids =[1]
+device_ids =[5]
 USE_SA_SIGNAL = True
 os.environ["CUDA_VISIBLE_DEVICES"]=", ".join(str(device_id) for device_id in device_ids)
 
@@ -210,9 +210,13 @@ def train(args):
    
 
     checkpoint = torch.load(args.teacher_checkpoint_path, map_location='cpu')
-    checkpoint['model'] = {k.replace("tf_dec.", "dec."): v for k, v in checkpoint['model'].items()} # compatibility with older runs
-    teacher_model.load_state_dict(checkpoint['model'], strict=True)
-    msg = teacher_model.load_state_dict(checkpoint['model'], strict=True)
+    if 'model' in checkpoint.keys():
+        checkpoint['model'] = {k.replace("tf_dec.", "dec."): v for k, v in checkpoint['model'].items()} # compatibility with older runs
+        teacher_model.load_state_dict(checkpoint['model'], strict=True)
+        msg = teacher_model.load_state_dict(checkpoint['model'], strict=True)
+    else:
+        teacher_model.load_state_dict(checkpoint, strict=True)
+        msg = teacher_model.load_state_dict(checkpoint, strict=True)
     for param in teacher_model.parameters():
         param.requires_grad = False  # not update by gradient
     print(msg)
@@ -427,7 +431,7 @@ def train(args):
             ari_slot_metric.reset()
             miou_slot_metric.reset()
             
-            if (val_loss < best_val_loss) or (best_val_ari > ari) or (best_mbo_c > mbo_c):
+            if best_mbo_i_slot < mbo_i_slot :
                 best_val_loss = val_loss
                 best_val_ari = ari
                 best_val_ari_slot = ari_slot
